@@ -58,6 +58,11 @@ jobs:
             # dry-run: the workspace version is the single source of truth.
             $version = $cargo
           }
+          # A release must be described: fail early (dry-run included) if the
+          # CHANGELOG has no section for this version.
+          if (-not (Select-String -Path CHANGELOG.md -Pattern "^## \[$version\]" -Quiet)) {
+            throw "CHANGELOG.md has no '## [$version]' section - add release notes for $version before releasing"
+          }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
           Write-Host "release version: $version"
 
@@ -144,13 +149,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $version = '${{ steps.meta.outputs.version }}'
+
+          # Release notes are the CHANGELOG section for this version, verbatim.
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -Pattern "^## \[$version\]" | Select-Object -First 1).LineNumber
+          if (-not $start) { throw "CHANGELOG.md has no '## [$version]' section" }
+          $section = @()
+          for ($i = $start; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^## \[' -or $lines[$i] -match '^\[.+\]:') { break }
+            $section += $lines[$i]
+          }
+          $changelog = ($section -join "`n").Trim()
+
+          $fence = '```'
           $notes = @"
-          jdk $env:GITHUB_REF_NAME — a Windows-first Java version manager: real .exe shims plus a persistent JAVA_HOME, no admin.
+          $changelog
 
-          Install (PowerShell):
-            irm https://raw.githubusercontent.com/isacgalvao/jdk/master/install.ps1 | iex
+          ---
 
-          See the README for the command reference and the full setup.
+          **Install (PowerShell)**
+
+          ${fence}powershell
+          irm https://raw.githubusercontent.com/isacgalvao/jdk/master/install.ps1 | iex
+          $fence
+
+          See the [README](https://github.com/isacgalvao/jdk#readme) for the command reference and the full setup.
           "@
           $assets = Get-ChildItem dist -File | ForEach-Object { $_.FullName }
           gh release create $env:GITHUB_REF_NAME --title "jdk $env:GITHUB_REF_NAME" --notes $notes @assets
