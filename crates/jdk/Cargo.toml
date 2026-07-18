@@ -5,10 +5,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
-jdk-core = { path = "../jdk-core" }
-jdk-resolve = { path = "../jdk-resolve" }
+jdk-core = { path = "../jdk-core", version = "0.1.0" }
+jdk-resolve = { path = "../jdk-resolve", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 # Progress rendering lives here, never in jdk-core (which only exposes a
 # callback) — the engine stays UI-free.
