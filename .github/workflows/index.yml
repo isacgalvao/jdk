@@ -1,0 +1,107 @@
+# Daily generation and publication of the jdk-index data repository
+# (isacgalvao/jdk-index), with a loud failure path: any failed run opens or
+# updates an issue labeled `index-pipeline` — an index cron that dies silently
+# goes unnoticed (anti-model 7).
+#
+# Publishing needs the repository secret INDEX_DEPLOY_KEY: a private SSH key
+# whose public half is a write-enabled deploy key on isacgalvao/jdk-index.
+
+name: index
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: Fail on purpose before publishing (proves the alert path)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: index-publish
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    # Wide enough for the one-time trust-on-first-use backfill (vendors
+    # foojay has no sha256 for get their archives streamed and hashed once;
+    # later runs reuse the published hashes and are minutes).
+    timeout-minutes: 120
+    steps:
+      - name: forced failure (alert-path test)
+        if: inputs.force_fail
+        run: |
+          echo "force_fail requested - failing before generate/publish to exercise the alert"
+          exit 1
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+
+      - name: generate and validate the index
+        run: >
+          cargo run --release -p jdk-index-gen --
+          --out staged
+          --compare-to https://raw.githubusercontent.com/isacgalvao/jdk-index/main
+
+      - name: publish to isacgalvao/jdk-index (only when changed)
+        env:
+          DEPLOY_KEY: ${{ secrets.INDEX_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/jdk_index_deploy
+          chmod 600 ~/.ssh/jdk_index_deploy
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND='ssh -i ~/.ssh/jdk_index_deploy -o IdentitiesOnly=yes'
+
+          git clone --depth 1 git@github.com:isacgalvao/jdk-index.git published
+
+          cp staged/index.json published/index.json
+          rsync -a --delete staged/windows-x64/ published/windows-x64/
+          if [ -d staged/windows-aarch64 ]; then
+            rsync -a --delete staged/windows-aarch64/ published/windows-aarch64/
+          else
+            rm -rf published/windows-aarch64
+          fi
+
+          cd published
+          git add -A
+          if git diff --cached --quiet; then
+            echo "index unchanged - nothing to publish"
+            exit 0
+          fi
+          git -c user.name='jdk index pipeline' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "index: $(date -u +%F)"
+          git push origin HEAD:main
+
+  alert:
+    needs: generate
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: open or update the index-pipeline issue (deduplicated)
+        run: |
+          gh label create index-pipeline --repo "$GITHUB_REPOSITORY" \
+            --description 'index generation pipeline health' --color B60205 --force
+
+          open_issue="$(gh issue list --repo "$GITHUB_REPOSITORY" --label index-pipeline \
+            --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$open_issue" ]; then
+            gh issue comment "$open_issue" --repo "$GITHUB_REPOSITORY" \
+              --body "Index generation failed again on $(date -u +%F): $RUN_URL"
+          else
+            body="$(printf 'The daily index generation failed: %s\n\nUntil this is fixed the published index at isacgalvao/jdk-index goes stale (clients keep working through their cache and the live foojay fallback). Close this issue once a run goes green.' "$RUN_URL")"
+            gh issue create --repo "$GITHUB_REPOSITORY" --label index-pipeline \
+              --title "index pipeline failing since $(date -u +%F)" \
+              --body "$body"
+          fi

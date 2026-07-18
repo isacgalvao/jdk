@@ -1,0 +1,26 @@
+[package]
+name = "jdk-index-gen"
+description = "Generator of the jdk-index catalog: foojay Disco API to a static index with sha256/LTS/EA"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Reuses jdk-core's index types and HTTP client, so the generator produces the
+# contract the client consumes by construction.
+[dependencies]
+jdk-core = { path = "../jdk-core" }
+jdk-resolve = { path = "../jdk-resolve" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Streaming trust-on-first-use hashing (jdk-core only exposes whole-buffer
+# sha256_hex); sha1 cross-checks the digest foojay announces for vendors
+# that publish nothing stronger (liberica).
+sha1 = "0.10"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
+test-support = { path = "../test-support" }

@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/jdk",
+    "crates/jdk-core",
+    "crates/jdk-index-gen",
+    "crates/jdk-resolve",
+    "crates/jdk-shim",
+    "crates/test-support",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+
+# Size-optimized profile for the shim, which is copied byte-identically once
+# per JDK tool — so every byte counts.
+[profile.release-shim]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+opt-level = "z"  # Optimize for size
+panic = "abort"  # Smaller binary without unwinding
+strip = true  # Strip symbols

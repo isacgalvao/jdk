@@ -1,0 +1,19 @@
+[package]
+name = "jdk"
+description = "Windows-first Java version manager: per-project auto-switch via real .exe shims plus a persistent global JAVA_HOME"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+jdk-core = { path = "../jdk-core" }
+jdk-resolve = { path = "../jdk-resolve" }
+clap = { version = "4", features = ["derive"] }
+# Progress rendering lives here, never in jdk-core (which only exposes a
+# callback) — the engine stays UI-free.
+indicatif = "0.17"
+
+[dev-dependencies]
+tempfile = "3"
+test-support = { path = "../test-support" }

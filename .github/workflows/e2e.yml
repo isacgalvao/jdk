@@ -1,0 +1,79 @@
+# Nightly end-to-end run against the real world: real registry (the runner is
+# disposable), real network, a real Temurin JDK through the shim, Maven picking
+# up the registry JAVA_HOME, and an experimental Ctrl+C round-trip proving the
+# shim's ignore does not desensitize the child JVM's shutdown hooks (M1 review
+# follow-up).
+#
+# `jdk doctor` (inside e2e_validate.ps1) probes the published index for real,
+# so this workflow only goes fully green once isacgalvao/jdk-index exists.
+# Install still passes before that through the live foojay fallback.
+
+name: e2e
+
+on:
+  schedule:
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: amd64
+            experimental: false
+          # Best-effort second platform, not part of the v0.1 acceptance.
+          - runner: windows-11-arm
+            arch: aarch64
+            experimental: true
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+
+      - name: clear the runner's machine-scope JAVA_HOME (toolcache artifact)
+        # GitHub runners ship a machine-scope (HKLM) JAVA_HOME pointing at a
+        # preinstalled toolcache JDK. A clean user machine has none, so jdk
+        # doctor rightly flags the HKLM-vs-per-user conflict and exits non-zero.
+        # Remove it so this run reflects a normal install; the runner is
+        # disposable and runs elevated.
+        run: reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v JAVA_HOME /f 2>$null; Write-Host 'cleared machine-scope JAVA_HOME'
+
+      - name: build release (jdk.exe and jdk-shim.exe side by side)
+        run: |
+          cargo build --release -p jdk --bin jdk
+          if ($LASTEXITCODE -ne 0) { throw 'building jdk failed' }
+          cargo build --release -p jdk-shim --bin jdk-shim
+          if ($LASTEXITCODE -ne 0) { throw 'building jdk-shim failed' }
+
+      - name: jdk setup (real HKCU registry)
+        run: |
+          & target/release/jdk.exe setup --yes
+          if ($LASTEXITCODE -ne 0) { throw "jdk setup exited $LASTEXITCODE" }
+
+      - name: jdk install temurin@21 (real download)
+        run: |
+          & target/release/jdk.exe install temurin@21
+          if ($LASTEXITCODE -ne 0) { throw "jdk install exited $LASTEXITCODE" }
+
+      - name: shim, junction, registry and doctor validations
+        run: ./.github/scripts/e2e_validate.ps1 -Jdk target/release/jdk.exe -ExpectedArch ${{ matrix.arch }}
+
+      - name: mvn -version uses the registry JAVA_HOME
+        run: ./.github/scripts/e2e_maven.ps1
+
+      - name: Ctrl+C reaches the child JVM through the shim
+        # Skips itself (with a warning) on runners that can't deliver console
+        # Ctrl+C even to a direct JVM; fails only on a real shim regression.
+        run: ./.github/scripts/e2e_ctrlc.ps1

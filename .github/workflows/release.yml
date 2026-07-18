@@ -1,0 +1,156 @@
+# Builds and publishes a jdk release. A tag push (`v*`) publishes a GitHub
+# release; a manual run is a dry-run that only builds and uploads the same
+# artifacts as workflow artifacts, so the pipeline can be exercised without
+# cutting a release.
+#
+# Everything runs on Windows: the shim, the Defender scan and the zips are all
+# Windows-native. aarch64 is best-effort (continue-on-error) and never blocks
+# the x64 release.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Least privilege: the default token can only read; the job elevates to
+# contents: write for `gh release create`, which only runs on a tag.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: windows-2025
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      # cargo-auditable embeds the dependency SBOM in jdk.exe; cargo-audit
+      # fails the build on a known-vulnerable dependency.
+      - name: install cargo-auditable and cargo-audit
+        uses: taiki-e/install-action@ed67fa35ac944f3a9b33f12c4dd43b6f31a47e20  # v2
+        with:
+          tool: cargo-auditable,cargo-audit
+
+      - name: resolve release version
+        id: meta
+        run: |
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = $env:GITHUB_REF_NAME -replace '^v', ''
+            if ($version -ne $cargo) {
+              throw "tag v$version does not match Cargo.toml workspace version $cargo - bump Cargo.toml or retag"
+            }
+          } else {
+            # dry-run: the workspace version is the single source of truth.
+            $version = $cargo
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+          Write-Host "release version: $version"
+
+      - name: audit dependencies for known vulnerabilities
+        run: cargo audit
+
+      - name: build jdk.exe (x64, SBOM embedded)
+        run: cargo auditable build --release -p jdk --bin jdk
+
+      - name: build jdk-shim.exe (x64, size profile)
+        run: cargo build --profile release-shim -p jdk-shim --bin jdk-shim
+
+      - name: shim size gate (< 1 MiB)
+        run: |
+          $shim = Get-Item target/release-shim/jdk-shim.exe
+          Write-Host "jdk-shim.exe: $($shim.Length) bytes"
+          if ($shim.Length -ge 1MB) { throw "jdk-shim.exe is $($shim.Length) bytes, gate is < 1 MiB" }
+
+      - name: build aarch64 (best-effort)
+        id: arm64
+        continue-on-error: true
+        run: |
+          cargo auditable build --release -p jdk --bin jdk --target aarch64-pc-windows-msvc
+          cargo build --profile release-shim -p jdk-shim --bin jdk-shim --target aarch64-pc-windows-msvc
+
+      # Each zip carries jdk.exe, jdk-shim.exe side by side (what `jdk setup`
+      # needs) plus LICENSE and README.md. A `<file>.sha256` sidecar
+      # (`<hash>  <name>`, lowercase — what install.ps1 reads) accompanies every
+      # artifact, install.ps1 included.
+      - name: assemble release artifacts
+        run: |
+          $version = '${{ steps.meta.outputs.version }}'
+          $dist = Join-Path $PWD 'dist'
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+          function New-Bundle([string]$Arch, [string]$JdkExe, [string]$ShimExe) {
+            if (-not (Test-Path $JdkExe) -or -not (Test-Path $ShimExe)) {
+              Write-Host "skip $Arch - binaries not present (best-effort build did not produce them)"
+              return
+            }
+            $stage = Join-Path $env:RUNNER_TEMP "stage-$Arch"
+            New-Item -ItemType Directory -Force -Path $stage | Out-Null
+            Copy-Item $JdkExe  (Join-Path $stage 'jdk.exe')
+            Copy-Item $ShimExe (Join-Path $stage 'jdk-shim.exe')
+            Copy-Item LICENSE, README.md $stage
+            $zip = Join-Path $dist "jdk-v$version-windows-$Arch.zip"
+            Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
+            Write-Host "packaged $zip"
+          }
+
+          New-Bundle 'x64'   'target/release/jdk.exe'                          'target/release-shim/jdk-shim.exe'
+          New-Bundle 'arm64' 'target/aarch64-pc-windows-msvc/release/jdk.exe'  'target/aarch64-pc-windows-msvc/release-shim/jdk-shim.exe'
+
+          Copy-Item install.ps1 $dist
+
+          Get-ChildItem $dist -File | Where-Object { $_.Extension -ne '.sha256' } | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText("$($_.FullName).sha256", "$hash  $($_.Name)`n")
+          }
+          Get-ChildItem $dist -File | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Scan with Microsoft Defender
+        run: |
+          # https://learn.microsoft.com/ja-jp/defender-endpoint/command-line-arguments-microsoft-defender-antivirus
+          $defenderPath = "${env:ProgramFiles}/Windows Defender/MpCmdRun.exe"
+
+          Write-Host "Updating Microsoft Defender signatures..."
+          & $defenderPath -SignatureUpdate
+
+          Write-Host "Scan packages..."
+          $filePath = (Resolve-Path -Path "dist").Path
+          & $defenderPath -Scan -ScanType 3 -File $filePath -DisableRemediation
+
+      - name: upload workflow artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: jdk-${{ steps.meta.outputs.version }}-windows
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: publish GitHub release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          jdk $env:GITHUB_REF_NAME — a Windows-first Java version manager: real .exe shims plus a persistent JAVA_HOME, no admin.
+
+          Install (PowerShell):
+            irm https://raw.githubusercontent.com/isacgalvao/jdk/master/install.ps1 | iex
+
+          See the README for the command reference and the full setup.
+          "@
+          $assets = Get-ChildItem dist -File | ForEach-Object { $_.FullName }
+          gh release create $env:GITHUB_REF_NAME --title "jdk $env:GITHUB_REF_NAME" --notes $notes @assets

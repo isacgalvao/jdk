@@ -1,0 +1,17 @@
+[package]
+name = "test-support"
+description = "Dev-only hermetic test support: loopback HTTP server, fake-JDK fixtures, workspace binary builders"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Never part of the runtime graph: consumers list this crate under
+# [dev-dependencies] only. The jdk-core dependency (for the index contract
+# types behind serve_catalog) makes a dev-cycle with jdk-core's own tests,
+# which cargo explicitly allows.
+[dependencies]
+jdk-core = { path = "../jdk-core" }
+serde_json = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }

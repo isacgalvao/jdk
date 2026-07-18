@@ -1,0 +1,37 @@
+[package]
+name = "jdk-core"
+description = "Catalog, download and install engine for the jdk version manager"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+jdk-resolve = { path = "../jdk-resolve" }
+# Sync HTTP over rustls, proxy from env; redirects are followed manually so the
+# HTTPS-only policy and vendor headers apply to every hop.
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+# Trust roots from the Windows certificate store (corporate CAs live there).
+rustls-native-certs = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
+# M4 pillar: NTFS junction for `current` (no admin, unlike symlinks) and the
+# registry API for HKCU\Environment (never setx).
+junction = "2.0.0"
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    # M4: WM_SETTINGCHANGE broadcast (env) and the elevation probe (admin).
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Security",
+] }
+winreg = "0.56.0"
+
+[dev-dependencies]
+tempfile = "3"
+test-support = { path = "../test-support" }
