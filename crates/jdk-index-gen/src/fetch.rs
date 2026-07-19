@@ -424,7 +424,25 @@ fn usable_url(policy: UrlPolicy, url: &str) -> Result<()> {
             "not a direct vendor URL (ephemeral foojay link): {url}"
         )));
     }
-    check_trusted(url, policy)
+    check_trusted(url, policy)?;
+    // Oracle publishes both an immutable versioned path (.../java/25/archive/
+    // jdk-25.0.2_...) and a mutable /latest/ alias whose bytes change on every
+    // patch — a pinned sha256 over the latter rots on the next release. Drop
+    // it (best-effort: the package is skipped, the index still publishes) so
+    // only the immutable form is ever indexed.
+    if is_mutable_oracle(url) {
+        return Err(Error::Catalog(format!(
+            "mutable Oracle URL (/latest/ rots on each patch); expected the versioned /archive/ path: {url}"
+        )));
+    }
+    Ok(())
+}
+
+/// Oracle's `/latest/` alias on `download.oracle.com` — the mutable form the
+/// index must never pin a hash to.
+fn is_mutable_oracle(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.contains("download.oracle.com") && lower.contains("/latest/")
 }
 
 fn is_hex_sha256(text: &str) -> bool {
@@ -492,6 +510,26 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn oracle_latest_alias_is_not_publishable() {
+        let policy = UrlPolicy::Strict;
+        // Immutable versioned path is fine.
+        assert!(
+            usable_url(
+                policy,
+                "https://download.oracle.com/java/25/archive/jdk-25.0.2_windows-x64_bin.zip"
+            )
+            .is_ok()
+        );
+        // The mutable /latest/ alias rots a pinned hash — dropped.
+        let err = usable_url(
+            policy,
+            "https://download.oracle.com/java/25/latest/jdk-25_windows-x64_bin.zip",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("/latest/"), "{err}");
     }
 
     #[test]

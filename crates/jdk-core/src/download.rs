@@ -276,6 +276,26 @@ fn vendor_headers(vendor: &str) -> Vec<(&'static str, String)> {
     }
 }
 
+/// One-line license notice for vendors under proprietary terms — the only
+/// non-open-source distributions in the catalog. Keyed by the INDEX vendor id,
+/// like [`vendor_headers`]; the CLI prints it before the download so the user
+/// sees the terms before fetching the binary. `None` for the open-source
+/// vendors, which need no notice.
+pub fn license_notice(vendor: &str) -> Option<&'static str> {
+    match vendor {
+        "oracle" => Some(
+            "Oracle JDK is under the Oracle No-Fee Terms and Conditions (NFTC); \
+             older releases may revert to the more restrictive OTN license — \
+             https://www.oracle.com/downloads/licenses/no-fee-license.html",
+        ),
+        "graalvm" => Some(
+            "Oracle GraalVM is under the GraalVM Free Terms and Conditions (GFTC) — \
+             https://www.oracle.com/downloads/licenses/graal-free-license.html",
+        ),
+        _ => None,
+    }
+}
+
 /// Lowercase hex sha256 of an in-memory buffer (index platform files).
 pub fn sha256_hex(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
@@ -381,6 +401,15 @@ mod tests {
         assert!(vendor_headers("temurin").is_empty());
         // URL substrings must play no role; only the vendor id decides.
         assert!(vendor_headers("not-zulu-either").is_empty());
+    }
+
+    #[test]
+    fn license_notice_only_for_proprietary_vendors() {
+        assert!(license_notice("oracle").unwrap().contains("NFTC"));
+        assert!(license_notice("graalvm").unwrap().contains("GFTC"));
+        // Open-source vendors get no notice.
+        assert!(license_notice("temurin").is_none());
+        assert!(license_notice("oracle_open_jdk").is_none());
     }
 
     #[test]

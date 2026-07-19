@@ -499,6 +499,39 @@ fn vendor_headers_survive_redirects() {
     }
 }
 
+/// The Oracle license cookie is only asserted as a pure `vendor_headers`
+/// value elsewhere; this pins that it actually reaches the download wire, the
+/// way `vendor_headers_survive_redirects` does for zulu's Referer. Without the
+/// header Oracle's CDN serves an HTML license page, not the zip.
+#[test]
+fn the_oracle_license_cookie_reaches_the_download_wire() {
+    let (_, fake_java) = shim_binaries();
+    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let temp = TempDir::new().unwrap();
+
+    let server = Server::start();
+    let body = zip.clone();
+    server.route("/dl/oracle.zip", move |_| Response::ok(body.clone()));
+
+    let mut pkg = package(
+        "25.0.2",
+        &format!("{}/dl/oracle.zip", server.url()),
+        &sha256_hex(&zip),
+        zip.len() as u64,
+    );
+    pkg.vendor = "oracle".to_string();
+
+    fetch_archive(&http(), &pkg, &temp.path().join("o.zip"), None).unwrap();
+
+    let requests = server.requests_to("/dl/oracle.zip");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].header("cookie"),
+        Some("oraclelicense=accept-securebackup-cookie"),
+        "the Oracle license cookie must reach the download wire"
+    );
+}
+
 #[test]
 fn redirect_to_non_loopback_http_is_blocked() {
     let (_, fake_java) = shim_binaries();

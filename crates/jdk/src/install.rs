@@ -20,6 +20,12 @@ pub fn run(root: &Path, selector: &str, from_shim: bool) -> Result<(), Fail> {
         .map_err(Fail::engine)?;
     let name = format!("{}@{}", package.vendor, package.version);
 
+    // Proprietary-vendor terms, shown before the binary is fetched — in the
+    // shim path too, where the user is otherwise handed the download silently.
+    if let Some(notice) = jdk_core::download::license_notice(&package.vendor) {
+        eprintln!("jdk: {notice}");
+    }
+
     let bar = progress(&name, package.size);
     let mut on_progress = |done: u64, total: u64| {
         if total > 0 {

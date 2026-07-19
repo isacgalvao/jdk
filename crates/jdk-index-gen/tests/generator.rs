@@ -461,6 +461,78 @@ fn fails_when_a_required_vendor_is_empty() {
 }
 
 #[test]
+fn a_best_effort_vendor_transport_error_does_not_abort_the_publish() {
+    let server = Server::start();
+    let baseline = baseline();
+    // Detail routes for the six required vendors (oracle never gets that far).
+    for fake in &baseline {
+        let body = format!(
+            r#"{{"result":[{{"filename":"jdk.zip","direct_download_uri":"{}","checksum":"{}","checksum_type":"sha256","checksum_uri":""}}]}}"#,
+            fake.url,
+            fake.served_checksum(),
+        );
+        server.route(&format!("/ids/{}", fake.id), move |_| {
+            Response::ok(body.clone())
+        });
+    }
+    // The required vendors list normally; the best-effort oracle query
+    // hard-fails at the transport layer (HTTP 500 on either arch).
+    let items: Vec<(String, String)> = baseline
+        .iter()
+        .map(|fake| {
+            (
+                fake.vendor.to_string(),
+                format!(
+                    r#"{{"id":"{}","java_version":"{}","term_of_support":"lts","release_status":"ga","size":1000}}"#,
+                    fake.id, fake.version,
+                ),
+            )
+        })
+        .collect();
+    server.route("/packages", move |request| {
+        let query = &request.path;
+        if query.contains("distribution=oracle") {
+            return Response::empty(500);
+        }
+        if query.contains("architecture=arm64,aarch64") {
+            return Response::ok(r#"{"result":[]}"#.to_string());
+        }
+        let listed: Vec<String> = items
+            .iter()
+            .filter(|(vendor, _)| query.contains(&format!("distribution={vendor}")))
+            .map(|(_, item)| item.clone())
+            .collect();
+        Response::ok(format!(r#"{{"result":[{}]}}"#, listed.join(",")))
+    });
+
+    let out = tempfile::tempdir().unwrap();
+    let output = generate(&server, out.path(), &[]);
+    // Oracle's 500 must NOT abort the run — the required six still publish.
+    assert_ok(&output);
+
+    let paths: Vec<String> = read_index(out.path())
+        .files
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect();
+    assert!(
+        !paths.iter().any(|path| path.contains("oracle")),
+        "a best-effort vendor's outage must omit it, not fail the run: {paths:?}"
+    );
+    for vendor in VENDORS {
+        assert!(
+            paths.contains(&format!("windows-x64/{vendor}.json")),
+            "required vendor {vendor} must still publish"
+        );
+    }
+    let warnings = stderr(&output);
+    assert!(
+        warnings.contains("best-effort") && warnings.contains("oracle"),
+        "{warnings}"
+    );
+}
+
+#[test]
 fn duplicate_versions_collapse_deterministically() {
     let server = Server::start();
     let mut packages = baseline();

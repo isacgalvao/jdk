@@ -125,26 +125,49 @@ impl CompareTo {
 }
 
 /// Global AND per-file: a vendor collapsing inside an otherwise healthy
-/// total is exactly the failure a coarse global count waves through.
-pub fn shrink_guard(published: Option<&Published>, counts: &Counts, max_shrink: f64) -> Result<()> {
+/// total is exactly the failure a coarse global count waves through. Only the
+/// mandatory floor is hard — a `required` vendor's windows-x64 file. A
+/// best-effort vendor (in the index but not `required`) and every
+/// windows-aarch64 file (best-effort by design, never fatal) only warn on a
+/// shortfall, so one vendor's outage never blocks the rest. The global total
+/// stays hard.
+pub fn shrink_guard(
+    published: Option<&Published>,
+    counts: &Counts,
+    max_shrink: f64,
+    required: &[&str],
+) -> Result<()> {
     let Some(published) = published else {
         return Ok(());
     };
-    check_shrink("index", published.total(), counts.total(), max_shrink)?;
+    check_shrink("index", published.total(), counts.total(), max_shrink, true)?;
     for (path, old) in &published.count_by_file {
         let new = counts.by_file.get(path).copied().unwrap_or(0);
-        check_shrink(path, *old, new, max_shrink)?;
+        let hard = path.starts_with("windows-x64/")
+            && vendor_of(path).is_some_and(|vendor| required.contains(&vendor));
+        check_shrink(path, *old, new, max_shrink, hard)?;
     }
     Ok(())
 }
 
-fn check_shrink(what: &str, old: usize, new: usize, max_shrink: f64) -> Result<()> {
+/// `windows-x64/oracle.json` → `oracle`.
+fn vendor_of(path: &str) -> Option<&str> {
+    path.rsplit('/').next()?.strip_suffix(".json")
+}
+
+fn check_shrink(what: &str, old: usize, new: usize, max_shrink: f64, hard: bool) -> Result<()> {
     if old == 0 || new >= old {
         println!("shrink guard: {what}: {old} -> {new} packages, ok");
         return Ok(());
     }
     let shrink = ((old - new) as f64 / old as f64) * 100.0;
     if shrink > max_shrink {
+        if !hard {
+            eprintln!(
+                "warning: best-effort {what} shrank {shrink:.1}% ({old} -> {new} packages); publishing without the shortfall"
+            );
+            return Ok(());
+        }
         return Err(Error::Catalog(format!(
             "{what} shrank {shrink:.1}% ({old} -> {new} packages), over the {max_shrink}% limit — refusing to publish (foojay outage or filter regression?)"
         )));
@@ -290,4 +313,73 @@ pub fn report(counts: &Counts, dropped: usize) {
         println!("{path}: {count} packages");
     }
     println!("total: {} packages, {dropped} dropped", counts.total());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn counts(entries: &[(&str, usize)]) -> Counts {
+        Counts {
+            by_file: entries.iter().map(|(p, n)| (p.to_string(), *n)).collect(),
+        }
+    }
+
+    fn published(entries: &[(&str, usize)]) -> Published {
+        Published {
+            updated: "2026-01-01T00:00:00Z".to_string(),
+            count_by_file: entries.iter().map(|(p, n)| (p.to_string(), *n)).collect(),
+            sha256_by_file: Default::default(),
+            sha256_by_url: Default::default(),
+        }
+    }
+
+    #[test]
+    fn vendor_of_reads_the_last_segment() {
+        assert_eq!(vendor_of("windows-x64/oracle.json"), Some("oracle"));
+        assert_eq!(vendor_of("temurin.json"), Some("temurin"));
+        assert_eq!(vendor_of("windows-x64/oracle.txt"), None);
+    }
+
+    #[test]
+    fn best_effort_vendor_may_vanish_but_a_required_one_may_not() {
+        let required = ["temurin", "zulu"];
+
+        // Oracle (best-effort) collapses to nothing; the healthy total keeps
+        // the global guard quiet, and its per-file shortfall only warns.
+        let before = published(&[
+            ("windows-x64/temurin.json", 100),
+            ("windows-x64/oracle.json", 5),
+        ]);
+        let after = counts(&[("windows-x64/temurin.json", 100)]);
+        assert!(shrink_guard(Some(&before), &after, 15.0, &required).is_ok());
+
+        // A required vendor collapsing the same way, with the global total
+        // held just under the limit, is fatal on the per-file check alone.
+        let before = published(&[
+            ("windows-x64/temurin.json", 100),
+            ("windows-x64/zulu.json", 100),
+        ]);
+        let after = counts(&[
+            ("windows-x64/temurin.json", 100),
+            ("windows-x64/zulu.json", 70),
+        ]);
+        assert!(shrink_guard(Some(&before), &after, 15.0, &required).is_err());
+    }
+
+    #[test]
+    fn an_aarch64_collapse_only_warns_even_for_a_required_vendor() {
+        let required = ["temurin"];
+        // temurin's windows-aarch64 file craters (best-effort platform), while
+        // its windows-x64 floor holds and the global total stays healthy.
+        let before = published(&[
+            ("windows-x64/temurin.json", 100),
+            ("windows-aarch64/temurin.json", 10),
+        ]);
+        let after = counts(&[
+            ("windows-x64/temurin.json", 100),
+            ("windows-aarch64/temurin.json", 3),
+        ]);
+        assert!(shrink_guard(Some(&before), &after, 15.0, &required).is_ok());
+    }
 }

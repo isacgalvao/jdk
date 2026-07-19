@@ -4,8 +4,11 @@
 //! before the caller may publish. The daily Action in `.github/workflows/
 //! index.yml` is its only production caller.
 //!
-//! windows-x64 is mandatory for every vendor in [`VENDORS`]; windows-aarch64
+//! windows-x64 is mandatory for every vendor in [`REQUIRED`]; windows-aarch64
 //! is best-effort — published for whichever vendors have data, never fatal.
+//! [`VENDORS`] additionally carries best-effort vendors (Oracle): fetched
+//! every run, but a bad day at the vendor omits it rather than failing the
+//! publish — see [`validate::tree`] and [`validate::shrink_guard`].
 
 mod fetch;
 mod output;
@@ -21,10 +24,25 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 use validate::CompareTo;
 
-/// The vendors the v0.1 index must cover (decision 6): each must yield at
-/// least one windows-x64 package or the run fails. Foojay distribution ids;
-/// `graalvm` is Oracle GraalVM (`graalvm_community` is a different id).
-const VENDORS: [&str; 6] = [
+/// Every vendor the generator fetches. Foojay distribution ids; `graalvm` is
+/// Oracle GraalVM (`graalvm_community` is a different id), `oracle` is the
+/// commercial Oracle JDK (NFTC).
+const VENDORS: [&str; 7] = [
+    "temurin",
+    "zulu",
+    "corretto",
+    "liberica",
+    "graalvm",
+    "microsoft",
+    "oracle",
+];
+
+/// The subset the index MUST cover (decision 6): each must yield at least one
+/// windows-x64 package or the run fails. Vendors in [`VENDORS`] but not here
+/// are best-effort — fetched, but their absence only warns (Oracle's checksum
+/// path is more fragile, and one vendor's outage must not block the daily
+/// publish of the rest).
+const REQUIRED: [&str; 6] = [
     "temurin",
     "zulu",
     "corretto",
@@ -105,7 +123,7 @@ fn run(cli: &Cli) -> Result<()> {
     let mut dropped = 0;
     for arch in ARCHES {
         for vendor in VENDORS {
-            let fetched = fetch::vendor_packages(
+            let fetched = match fetch::vendor_packages(
                 &http,
                 &cli.foojay,
                 vendor,
@@ -113,7 +131,21 @@ fn run(cli: &Cli) -> Result<()> {
                 cli.jobs,
                 published.as_ref(),
                 cli.hash_budget,
-            )?;
+            ) {
+                Ok(fetched) => fetched,
+                // Best-effort completeness at the transport layer too: a
+                // foojay error (non-200 listing, a failed detail call, bad
+                // JSON) on a best-effort vendor's query warns and skips, so
+                // one vendor's outage never blocks the required six. A
+                // required vendor's failure still aborts the publish.
+                Err(err) if !REQUIRED.contains(&vendor) => {
+                    eprintln!(
+                        "warning: best-effort windows-{arch}/{vendor} fetch failed ({err}); skipping"
+                    );
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
             dropped += fetched.dropped;
             if fetched.packages.is_empty() {
                 // x64 emptiness becomes a hard error in validate::tree; the
@@ -144,9 +176,9 @@ fn run(cli: &Cli) -> Result<()> {
         _ => updated,
     };
     output::write(&cli.out, &updated, files)?;
-    let counts = validate::tree(&cli.out, &VENDORS)?;
+    let counts = validate::tree(&cli.out, &REQUIRED)?;
     validate::report(&counts, dropped);
-    validate::shrink_guard(published.as_ref(), &counts, cli.max_shrink)?;
+    validate::shrink_guard(published.as_ref(), &counts, cli.max_shrink, &REQUIRED)?;
     println!("index staged at {} (updated {updated})", cli.out.display());
     Ok(())
 }
@@ -189,6 +221,18 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn required_vendors_are_all_fetched() {
+        // A required vendor absent from VENDORS is never fetched, so the tree
+        // floor would demand a vendor that can never appear — guard the drift.
+        for vendor in REQUIRED {
+            assert!(
+                VENDORS.contains(&vendor),
+                "required vendor {vendor} must be in the fetch set"
+            );
+        }
+    }
 
     #[test]
     fn formats_known_instants() {
