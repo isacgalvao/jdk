@@ -1,0 +1,16 @@
+# Keeps the SHA-pinned GitHub Actions current: Dependabot opens a PR bumping
+# each pin (SHA + `# vN` comment) when a new release lands, so the immutable
+# pins never go stale — the security of a SHA with the freshness of a tag.
+# All action updates are batched into one weekly PR.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci
