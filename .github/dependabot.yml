@@ -1,7 +1,8 @@
-# Keeps the SHA-pinned GitHub Actions current: Dependabot opens a PR bumping
-# each pin (SHA + `# vN` comment) when a new release lands, so the immutable
-# pins never go stale — the security of a SHA with the freshness of a tag.
-# All action updates are batched into one weekly PR.
+# Keeps dependencies current without surprises. For GitHub Actions, Dependabot
+# opens a PR bumping each SHA pin (SHA + `# vN` comment) when a new release
+# lands, so the immutable pins never go stale — the security of a SHA with the
+# freshness of a tag. Cargo crates are tracked the same way. Each ecosystem's
+# updates are batched into one weekly PR.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -14,3 +15,14 @@ updates:
           - "*"
     commit-message:
       prefix: ci
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: chore
