@@ -1,7 +1,8 @@
 # Builds and publishes a jdk release. A tag push (`v*`) publishes a GitHub
-# release; a manual run is a dry-run that only builds and uploads the same
-# artifacts as workflow artifacts, so the pipeline can be exercised without
-# cutting a release.
+# release and then the crates.io crates (jdk-resolve, jdk-core, jdk, in
+# dependency order — needs the CARGO_REGISTRY_TOKEN secret); a manual run is a
+# dry-run that only builds and uploads the same artifacts as workflow
+# artifacts, so the pipeline can be exercised without cutting a release.
 #
 # Everything runs on Windows: the shim, the Defender scan and the zips are all
 # Windows-native. aarch64 is best-effort (continue-on-error) and never blocks
@@ -32,7 +33,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
 
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
         with:
@@ -137,7 +138,7 @@ jobs:
           & $defenderPath -Scan -ScanType 3 -File $filePath -DisableRemediation
 
       - name: upload workflow artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: jdk-${{ steps.meta.outputs.version }}-windows
           path: dist
@@ -178,3 +179,29 @@ jobs:
           "@
           $assets = Get-ChildItem dist -File | ForEach-Object { $_.FullName }
           gh release create $env:GITHUB_REF_NAME --title "jdk $env:GITHUB_REF_NAME" --notes $notes @assets
+
+  # After a tag's release build/scan and GitHub release succeed, publish the
+  # three crates.io crates in dependency order. Windows-native so the
+  # `cargo publish` verification build (jdk-core/jdk are Windows-only) matches
+  # the manual publish. cargo waits for each crate to be indexed before the
+  # next resolves. jdk-index-gen and test-support are `publish = false`;
+  # jdk-shim is not a published crate. Requires the CARGO_REGISTRY_TOKEN
+  # secret (a crates.io API token) — absent it, this job fails.
+  publish-crates:
+    needs: release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+
+      - name: publish to crates.io (jdk-resolve -> jdk-core -> jdk)
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          cargo publish -p jdk-resolve
+          cargo publish -p jdk-core
+          cargo publish -p jdk
