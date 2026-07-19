@@ -65,7 +65,19 @@ pub const TOOLS: [Tool; 6] = [
 /// length and checks it against the source, so a truncated write fails loudly
 /// instead of leaving a half-formed tool behind.
 fn copy_shim(source: &Path, dest: &Path) -> io::Result<()> {
-    fs::copy(source, dest)?;
+    copy_shim_with(source, dest, |from, to| fs::copy(from, to))
+}
+
+/// [`copy_shim`] with the copy step injected — production always passes
+/// `fs::copy`; tests inject a stand-in that writes fewer bytes than the
+/// source, so the short-copy check can be pinned without a real truncated
+/// filesystem.
+fn copy_shim_with(
+    source: &Path,
+    dest: &Path,
+    copy: impl FnOnce(&Path, &Path) -> io::Result<u64>,
+) -> io::Result<()> {
+    copy(source, dest)?;
 
     let expected = fs::metadata(source)?.len();
     let written = fs::metadata(dest)?.len();
@@ -201,6 +213,22 @@ mod tests {
         fs::write(&source, b"payload").unwrap();
         copy_shim(&source, &temp.path().join("dst.exe")).unwrap();
         assert_eq!(fs::read(temp.path().join("dst.exe")).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn copy_shim_detects_a_short_copy() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("src.exe");
+        fs::write(&source, b"0123456789").unwrap();
+        let dest = temp.path().join("dst.exe");
+
+        let err = copy_shim_with(&source, &dest, |_, dest| {
+            fs::write(dest, b"012")?; // fewer bytes than the source
+            Ok(3)
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("short copy"), "{err}");
     }
 
     /// A running child of `shims\java.exe`, image mapped for the duration.

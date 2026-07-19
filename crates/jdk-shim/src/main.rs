@@ -145,26 +145,53 @@ fn load_config(root: &Path) -> Result<Config, i32> {
 /// bare-vendor lookup already read it once.
 fn auto_install(root: &Path, pin: &Pin, vendor: &str) -> Result<Candidate, i32> {
     let config = load_config(root)?;
-    match config.auto_install {
-        AutoInstall::Never => Err(not_installed(pin)),
-        AutoInstall::Prompt => {
-            if !(io::stdin().is_terminal() && io::stderr().is_terminal()) {
-                return Err(not_installed(pin));
-            }
-            eprint!(
-                "jdk-shim: {} (pinned by {}) is not installed. Install now? [Y/n] ",
-                pin.selector,
-                pin.file.display()
-            );
-            let mut answer = String::new();
-            match io::stdin().read_line(&mut answer) {
-                // Ok(0) is EOF: no terminal line to honor a default with.
-                Ok(read) if read > 0 && accepts(&answer) => {}
-                _ => return Err(not_installed(pin)),
-            }
-            install_via_cli(root, pin, vendor)
+    // Short-circuits away the is_terminal() syscalls for Never/Always: only
+    // Prompt ever cares whether stdin and stderr are consoles.
+    let is_tty = matches!(config.auto_install, AutoInstall::Prompt)
+        && io::stdin().is_terminal()
+        && io::stderr().is_terminal();
+    let decision = decide_install(config.auto_install, is_tty, || {
+        eprint!(
+            "jdk-shim: {} (pinned by {}) is not installed. Install now? [Y/n] ",
+            pin.selector,
+            pin.file.display()
+        );
+        let mut answer = String::new();
+        match io::stdin().read_line(&mut answer) {
+            // Ok(0) is EOF: no terminal line to honor a default with.
+            Ok(read) if read > 0 => Some(answer),
+            _ => None,
         }
-        AutoInstall::Always => install_via_cli(root, pin, vendor),
+    });
+    match decision {
+        InstallDecision::Install => install_via_cli(root, pin, vendor),
+        InstallDecision::Refuse => Err(not_installed(pin)),
+    }
+}
+
+/// The wiring at the heart of `auto_install`, pulled out so it can be
+/// exercised without a real TTY or stdin: given the policy, whether the
+/// console is interactive, and a line reader, decide install vs. refuse —
+/// no I/O of its own. `read_answer` is only ever invoked for `Prompt` with
+/// `is_tty` true; `Never` and `Always` settle without consulting either.
+enum InstallDecision {
+    Install,
+    Refuse,
+}
+
+fn decide_install(
+    policy: AutoInstall,
+    is_tty: bool,
+    read_answer: impl FnOnce() -> Option<String>,
+) -> InstallDecision {
+    match policy {
+        AutoInstall::Never => InstallDecision::Refuse,
+        AutoInstall::Always => InstallDecision::Install,
+        AutoInstall::Prompt if !is_tty => InstallDecision::Refuse,
+        AutoInstall::Prompt => match read_answer() {
+            Some(answer) if accepts(&answer) => InstallDecision::Install,
+            _ => InstallDecision::Refuse,
+        },
     }
 }
 
@@ -250,7 +277,8 @@ fn fail(message: &str, code: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{accepts, keep_waiting};
+    use super::{InstallDecision, accepts, decide_install, keep_waiting};
+    use jdk_resolve::config::AutoInstall;
     use windows_sys::Win32::Foundation::{FALSE, TRUE};
     use windows_sys::Win32::System::Console::{
         CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
@@ -283,5 +311,71 @@ mod tests {
         for answer in ["n\n", "N\n", "no\n", "nope\n", "j\n", "quit\n"] {
             assert!(!accepts(answer), "{answer:?}");
         }
+    }
+
+    /// The `auto_install` wiring under test, isolated from real I/O: a
+    /// panicking reader proves `Never`/`Always`/off-TTY `Prompt` never touch
+    /// stdin, and a fake reader drives the on-TTY `Prompt` branch. Inverting
+    /// the wiring (e.g. installing on refuse, or ignoring `is_tty`) fails at
+    /// least one of these.
+    fn refuses_to_read(reason: &'static str) -> impl FnOnce() -> Option<String> {
+        move || panic!("read_answer should not be called: {reason}")
+    }
+
+    #[test]
+    fn never_refuses_without_consulting_tty_or_reader() {
+        for is_tty in [true, false] {
+            let decision = decide_install(
+                AutoInstall::Never,
+                is_tty,
+                refuses_to_read("never installs"),
+            );
+            assert!(
+                matches!(decision, InstallDecision::Refuse),
+                "is_tty={is_tty}"
+            );
+        }
+    }
+
+    #[test]
+    fn always_installs_without_consulting_tty_or_reader() {
+        for is_tty in [true, false] {
+            let decision = decide_install(
+                AutoInstall::Always,
+                is_tty,
+                refuses_to_read("always installs unconditionally"),
+            );
+            assert!(
+                matches!(decision, InstallDecision::Install),
+                "is_tty={is_tty}"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_off_tty_refuses_without_reading() {
+        let decision = decide_install(
+            AutoInstall::Prompt,
+            false,
+            refuses_to_read("off-TTY must fail actionably instead of reading"),
+        );
+        assert!(matches!(decision, InstallDecision::Refuse));
+    }
+
+    #[test]
+    fn prompt_on_tty_installs_on_an_accepted_answer() {
+        for answer in ["y\n", "yes\n", "\n", "\r\n"] {
+            let decision = decide_install(AutoInstall::Prompt, true, || Some(answer.to_string()));
+            assert!(matches!(decision, InstallDecision::Install), "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn prompt_on_tty_refuses_on_a_declined_or_eof_answer() {
+        let decision = decide_install(AutoInstall::Prompt, true, || Some("n\n".to_string()));
+        assert!(matches!(decision, InstallDecision::Refuse), "explicit no");
+
+        let decision = decide_install(AutoInstall::Prompt, true, || None);
+        assert!(matches!(decision, InstallDecision::Refuse), "EOF");
     }
 }

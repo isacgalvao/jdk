@@ -73,7 +73,7 @@ pub fn extract_zip_capped(
         // Declared-size early abort; the copy below enforces on actual bytes
         // too, because declared sizes can lie.
         if entry.size() > max_bytes.saturating_sub(written) {
-            return Err(zip_bomb(archive, max_bytes));
+            return Err(zip_bomb(archive, max_bytes, "declared uncompressed size"));
         }
         if let Some(parent) = out.parent() {
             fs::create_dir_all(parent).map_err(Error::io("create", parent))?;
@@ -103,16 +103,19 @@ pub fn extract_zip_capped(
         if written > max_bytes {
             drop(out_file);
             let _ = fs::remove_file(&out);
-            return Err(zip_bomb(archive, max_bytes));
+            return Err(zip_bomb(archive, max_bytes, "uncompressed content"));
         }
         report.files += 1;
     }
     Ok(report)
 }
 
-fn zip_bomb(archive: &Path, cap: u64) -> Error {
+/// `what` names which guard tripped — `"declared uncompressed size"` for the
+/// per-entry early abort, `"uncompressed content"` for the running total after
+/// `io::copy` — so the two branches are distinguishable in logs and in tests.
+fn zip_bomb(archive: &Path, cap: u64, what: &str) -> Error {
     Error::Extract(format!(
-        "{}: uncompressed content exceeds the {cap}-byte ceiling (zip bomb?)",
+        "{}: {what} exceeds the {cap}-byte ceiling (zip bomb?)",
         archive.display()
     ))
 }
@@ -294,7 +297,75 @@ mod tests {
 
         let err =
             extract_zip_capped(&archive, &temp.path().join("out"), 1000, MAX_ENTRIES).unwrap_err();
-        assert!(err.to_string().contains("zip bomb"), "{err}");
+        // Honest sizes: the per-entry declared-size guard trips first.
+        assert!(
+            err.to_string().contains("declared uncompressed size"),
+            "{err}"
+        );
+    }
+
+    /// Patches the 4-byte little-endian uncompressed-size field that follows
+    /// a local/central header signature, `offset` bytes in (22 for a local
+    /// file header, 24 for a central directory header — both counted from
+    /// the signature itself).
+    fn patch_declared_size(bytes: &mut [u8], signature: &[u8; 4], offset: usize, declared: u32) {
+        let at = bytes
+            .windows(4)
+            .position(|w| w == signature)
+            .expect("signature present");
+        bytes[at + offset..at + offset + 4].copy_from_slice(&declared.to_le_bytes());
+    }
+
+    /// A zip whose single DEFLATEd entry decompresses to `real_len` bytes but
+    /// whose local AND central uncompressed-size fields lie and claim only
+    /// `declared` — decompression itself is governed by the deflate stream,
+    /// not by that metadata, so a reader trusting only the declared size is
+    /// fooled while the real byte count still flows through on read.
+    fn zip_with_a_lying_declared_size(real_len: usize, declared: u32) -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            writer.start_file("bomb.bin", options).unwrap();
+            writer.write_all(&vec![0xABu8; real_len]).unwrap();
+            writer.finish().unwrap();
+        }
+        let mut bytes = cursor.into_inner();
+        patch_declared_size(&mut bytes, &[0x50, 0x4b, 0x03, 0x04], 22, declared);
+        patch_declared_size(&mut bytes, &[0x50, 0x4b, 0x01, 0x02], 24, declared);
+        bytes
+    }
+
+    /// The declared-size short-circuit (`entry.size()` from the central
+    /// directory) only catches a bomb that is honest about its own size.
+    /// Here the header lies small while the deflate stream really decodes to
+    /// more than the cap, so the pre-check passes and only the running
+    /// `written` total accumulated by `io::copy` catches it — the branch
+    /// `caps_total_uncompressed_size` above never reaches.
+    #[test]
+    fn caps_total_uncompressed_size_when_the_declared_size_lies() {
+        let temp = TempDir::new().unwrap();
+        let archive = temp.path().join("lying.zip");
+        fs::write(&archive, zip_with_a_lying_declared_size(2000, 10)).unwrap();
+
+        let dest = temp.path().join("out");
+        let err = extract_zip_capped(&archive, &dest, 1000, MAX_ENTRIES).unwrap_err();
+
+        // The message is branch-specific: "uncompressed content" is ONLY the
+        // post-`io::copy` total guard. If a future `zip` release routed this
+        // write through a data descriptor (zeroing the local header size we
+        // patched) the declared-size pre-check would trip instead — its
+        // "declared uncompressed size" message would fail this assertion loudly
+        // rather than let the test pass while covering the weaker branch.
+        assert!(
+            err.to_string().contains("uncompressed content"),
+            "expected the actual-bytes guard, got: {err}"
+        );
+        assert!(
+            !dest.join("bomb.bin").exists(),
+            "the partial write must be removed, not left truncated"
+        );
     }
 
     #[test]

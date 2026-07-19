@@ -28,7 +28,24 @@ pub fn fetch_archive(
     http: &Http,
     package: &Package,
     dest: &Path,
+    progress: Option<Progress<'_>>,
+) -> Result<()> {
+    fetch_archive_capped(http, package, dest, progress, MAX_ARCHIVE)
+}
+
+/// `fetch_archive` with the archive-size ceiling injected. Exists only so the
+/// integration tests (a separate crate, blind to `pub(crate)`) can pin the
+/// ceiling checks with a small `max_bytes` instead of transferring gigabytes —
+/// every production caller goes through [`fetch_archive`], which passes
+/// [`MAX_ARCHIVE`]. Hidden from the public docs to signal it is not a general
+/// entry point.
+#[doc(hidden)]
+pub fn fetch_archive_capped(
+    http: &Http,
+    package: &Package,
+    dest: &Path,
     mut progress: Option<Progress<'_>>,
+    max_bytes: u64,
 ) -> Result<()> {
     let expected = package.sha256.trim().to_ascii_lowercase();
     if expected.is_empty() {
@@ -85,7 +102,7 @@ pub fn fetch_archive(
         // discard it and start over; without a Range a 416 cannot repeat.
         416 if start > 0 => {
             let _ = fs::remove_file(&part);
-            return fetch_archive(http, package, dest, progress);
+            return fetch_archive_capped(http, package, dest, progress, max_bytes);
         }
         _ => {
             return Err(Error::Http(format!(
@@ -96,9 +113,9 @@ pub fn fetch_archive(
     };
 
     let total = total_size(&reply, downloaded);
-    if total > MAX_ARCHIVE {
+    if total > max_bytes {
         return Err(Error::Security(format!(
-            "{} declares {total} bytes, over the {MAX_ARCHIVE}-byte ceiling",
+            "{} declares {total} bytes, over the {max_bytes}-byte ceiling",
             package.url
         )));
     }
@@ -106,7 +123,7 @@ pub fn fetch_archive(
         report(downloaded, total);
     }
 
-    let mut reader = reply.reader(MAX_ARCHIVE.saturating_add(1));
+    let mut reader = reply.reader(max_bytes.saturating_add(1));
     let mut buffer = vec![0u8; CHUNK];
     loop {
         match reader.read(&mut buffer) {
@@ -116,11 +133,11 @@ pub fn fetch_archive(
                 file.write_all(&buffer[..n])
                     .map_err(Error::io("write", &part))?;
                 downloaded += n as u64;
-                if downloaded > MAX_ARCHIVE {
+                if downloaded > max_bytes {
                     drop(file);
                     let _ = fs::remove_file(&part);
                     return Err(Error::Security(format!(
-                        "{} exceeded the {MAX_ARCHIVE}-byte ceiling",
+                        "{} exceeded the {max_bytes}-byte ceiling",
                         package.url
                     )));
                 }

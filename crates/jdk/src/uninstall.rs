@@ -11,7 +11,7 @@
 use crate::fail::Fail;
 use jdk_resolve::{exit, store};
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 
 pub fn run(root: &Path, selector: &str) -> Result<(), Fail> {
@@ -66,12 +66,24 @@ enum Removal {
 /// Windows `PermissionDenied` (os error 5) is what BOTH a locked directory
 /// and an ACL denial raise, so that message names the two.
 fn remove(dir: &Path, name: &str) -> Result<Removal, Fail> {
+    remove_with(dir, name, |dir: &Path| fs::remove_dir_all(dir))
+}
+
+/// [`remove`]'s rename-then-delete, with the delete step injectable: unit
+/// tests drive the `Deferred` outcome (delete fails after a successful
+/// rename) without needing a real locked directory (same seam shape as
+/// `decide_install` in jdk-shim).
+fn remove_with(
+    dir: &Path,
+    name: &str,
+    remove: impl Fn(&Path) -> io::Result<()>,
+) -> Result<Removal, Fail> {
     let mut removing = dir.to_path_buf().into_os_string();
     removing.push(".removing");
     let removing = PathBuf::from(removing);
 
     match fs::rename(dir, &removing) {
-        Ok(()) => match fs::remove_dir_all(&removing) {
+        Ok(()) => match remove(&removing) {
             Ok(()) => Ok(Removal::Removed),
             Err(_) => Ok(Removal::Deferred),
         },
@@ -141,5 +153,37 @@ mod tests {
         assert_eq!(outcome, Removal::Removed);
         assert!(!dir.exists());
         assert!(!temp.path().join("temurin@21.0.4.removing").exists());
+    }
+
+    #[test]
+    fn a_delete_failure_after_a_successful_rename_defers_and_a_later_sweep_clears_it() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let dir = store::java_candidates(root).join("temurin@21.0.4");
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        fs::write(dir.join("bin").join("java.exe"), b"stub").unwrap();
+
+        // The rename succeeds (real fs::rename); only the delete step is
+        // faked to fail, the way a still-open handle inside `.removing`
+        // would make the real `fs::remove_dir_all` fail.
+        let outcome = remove_with(&dir, "temurin@21.0.4", |_| {
+            Err(io::Error::new(ErrorKind::PermissionDenied, "locked"))
+        })
+        .unwrap();
+
+        let removing = store::java_candidates(root).join("temurin@21.0.4.removing");
+        assert_eq!(outcome, Removal::Deferred);
+        assert!(
+            !dir.exists(),
+            "renamed away — resolution can no longer see it"
+        );
+        assert!(
+            removing.exists(),
+            "the orphan is left on disk for the sweep"
+        );
+
+        sweep_orphans(root);
+
+        assert!(!removing.exists(), "a later sweep clears the leftover");
     }
 }
