@@ -10,7 +10,7 @@ repository.workspace = true
 # Shim firewall: no runtime dependencies, std only. Anything heavier belongs in jdk-core.
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 tempfile = "3"
 
 [[bench]]
