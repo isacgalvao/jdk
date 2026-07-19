@@ -4,6 +4,7 @@
 
 use jdk_core::current::{self, Current};
 use jdk_core::index::ReleaseStatus;
+use jdk_resolve::exit;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -521,6 +522,110 @@ fn selector_and_config_errors_exit_with_the_config_code() {
         stderr(&output).contains("config.toml"),
         "{}",
         stderr(&output)
+    );
+}
+
+#[test]
+fn malformed_pin_file_exits_with_the_config_code() {
+    // Distinct from a corrupt config.toml (`selector_and_config_errors_exit_with_the_config_code`):
+    // here config.toml is fine, the pin ITSELF is unparseable.
+    let world = World::offline();
+    fs::write(world.project.join(".jdkrc"), "java=banana\n").unwrap();
+
+    let output = world.jdk(&["current"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(exit::CONFIG),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains(".jdkrc"),
+        "the error must name the offending pin file: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn best_candidate_prefers_stable_over_a_higher_prerelease_through_the_real_binary() {
+    let world = World::offline();
+    world.install_fake("temurin@21.0.5");
+    // Numerically higher than 21.0.5, but a pre-release: must still lose.
+    world.install_fake("temurin@21.0.6-ea");
+    fs::write(world.project.join(".jdkrc"), "java=temurin@21\n").unwrap();
+
+    let output = world.jdk(&["which"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(
+        PathBuf::from(stdout(&output).trim()),
+        world
+            .candidate("temurin@21.0.5")
+            .join("bin")
+            .join("java.exe"),
+        "the stable release must win over the numerically higher EA build"
+    );
+}
+
+#[test]
+fn use_sweeps_orphaned_removing_dirs_before_switching() {
+    let world = World::offline();
+    world.install_fake("temurin@21.0.4");
+    let orphan = world.candidate("zulu@17.0.9.removing");
+    fs::create_dir_all(orphan.join("bin")).unwrap();
+    fs::write(orphan.join("bin").join("java.exe"), b"junk").unwrap();
+
+    let output = world.jdk(&["use", "21"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        !orphan.exists(),
+        "jdk use must sweep crashed-uninstall leftovers on the way in"
+    );
+}
+
+#[test]
+fn install_sweeps_orphaned_removing_dirs_before_installing() {
+    let server = Server::start();
+    let pkg = served_package(&server, "21.0.5+11");
+    serve_catalog(&server, std::slice::from_ref(&pkg));
+    let world = World::at(server.url().to_string());
+    let orphan = world.candidate("zulu@17.0.9.removing");
+    fs::create_dir_all(orphan.join("bin")).unwrap();
+    fs::write(orphan.join("bin").join("java.exe"), b"junk").unwrap();
+
+    let output = world.jdk(&["install", "temurin@21"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        !orphan.exists(),
+        "jdk install must sweep crashed-uninstall leftovers on the way in"
+    );
+}
+
+#[test]
+fn pin_file_with_bom_crlf_and_comment_resolves_successfully() {
+    let world = World::offline();
+    world.install_fake("temurin@21.0.4");
+    // BOM + CRLF + a trailing `#` comment on the pin line itself.
+    let content = "\u{feff}# team toolchain\r\njava=21.0.4-tem # LTS\r\n";
+    fs::write(world.project.join(".sdkmanrc"), content).unwrap();
+
+    let output = world.jdk(&["which"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "BOM/CRLF/comment must not be mistaken for CONFIG damage: stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(
+        PathBuf::from(stdout(&output).trim()),
+        world
+            .candidate("temurin@21.0.4")
+            .join("bin")
+            .join("java.exe")
     );
 }
 

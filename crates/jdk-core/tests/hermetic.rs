@@ -7,14 +7,16 @@
 use jdk_core::Error;
 use jdk_core::cache::Cache;
 use jdk_core::catalog::Catalog;
-use jdk_core::download::{fetch_archive, sha256_hex};
+use jdk_core::download::{MAX_ARCHIVE, fetch_archive, fetch_archive_capped, sha256_hex};
 use jdk_core::http::{Http, Retry, UrlPolicy};
 use jdk_core::index::{IndexEntry, IndexFile, current_platform};
 use jdk_core::install::install;
 use jdk_resolve::store;
 use std::fs;
+use std::io::Write as _;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 use test_support::{
@@ -634,4 +636,426 @@ fn foojay_without_sha256_is_refused() {
         .unwrap_err();
 
     assert!(err.to_string().contains("no sha256"), "{err}");
+}
+
+/// A resumed download whose Content-Range declares a total over the REAL
+/// `MAX_ARCHIVE` ceiling: the ceiling trips on the header alone, before the
+/// body loop ever runs (the read loop is never entered, so the served bytes
+/// are irrelevant), and the pre-existing `.part` is left exactly as it was —
+/// nothing further is written to it. This one goes through the public
+/// `fetch_archive` entry point (not the capped test seam below) to pin the
+/// real production constant, not just the mechanism.
+#[test]
+fn declared_total_over_the_archive_ceiling_is_rejected_before_reading_any_body() {
+    let (_, fake_java) = shim_binaries();
+    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let temp = TempDir::new().unwrap();
+    let dest = temp.path().join("t.zip");
+    let part = temp.path().join("t.zip.part");
+    let partial = zip[..8].to_vec();
+    fs::write(&part, &partial).unwrap();
+
+    let server = Server::start();
+    let huge_total = MAX_ARCHIVE + 1;
+    server.route("/dl/t.zip", move |request: &Request| {
+        assert!(
+            request.header("range").is_some(),
+            "a non-empty .part must resume with a Range request"
+        );
+        Response {
+            status: 206,
+            headers: vec![(
+                "Content-Range".to_string(),
+                format!("bytes 8-15/{huge_total}"),
+            )],
+            body: vec![0u8; 8],
+            pace: None,
+        }
+    });
+
+    let pkg = package(
+        "21.0.5+11",
+        &format!("{}/dl/t.zip", server.url()),
+        &sha256_hex(&zip),
+        zip.len() as u64,
+    );
+    let err = fetch_archive(&http(), &pkg, &dest, None).unwrap_err();
+
+    assert!(matches!(err, Error::Security(_)), "{err}");
+    assert!(err.to_string().contains("ceiling"), "{err}");
+    assert!(!dest.exists(), "the archive must never be finalized");
+    assert_eq!(
+        fs::read(&part).unwrap(),
+        partial,
+        "the ceiling check must trip before a single additional byte is written"
+    );
+}
+
+/// Same declared-size ceiling as above, but the FRESH (200, no resume) path,
+/// now expressible without transferring gigabytes: `fetch_archive_capped`
+/// takes a small `max_bytes`, and the test server's honest Content-Length
+/// (it always reports the real body size) is already over it.
+///
+/// A quirk of today's implementation worth calling out precisely: `dest` is
+/// never created, but the `.part` staging file IS opened (`File::create`)
+/// before the declared-size check runs — that ordering is unchanged by this
+/// pass (behavior-preserving refactor only), so an empty `.part` stub can be
+/// left on disk even though the ceiling trips before a single body byte is
+/// read. This test pins the precise, honest guarantee — no DATA byte ever
+/// reaches disk — rather than the stronger "no `.part` file exists at all",
+/// which the current code does not provide on this specific path.
+#[test]
+fn declared_total_over_a_capped_ceiling_on_a_fresh_download_is_rejected_before_reading_any_body() {
+    let temp = TempDir::new().unwrap();
+    let dest = temp.path().join("t.zip");
+    let part = temp.path().join("t.zip.part");
+    let cap = 1024u64;
+
+    let server = Server::start();
+    let oversized = vec![0xABu8; cap as usize + 200];
+    server.route("/dl/fresh.zip", move |_| Response::ok(oversized.clone()));
+
+    let pkg = package(
+        "21.0.5+11",
+        &format!("{}/dl/fresh.zip", server.url()),
+        &"a".repeat(64), // never reached: rejected before hashing settles
+        cap + 200,
+    );
+    let err = fetch_archive_capped(&http(), &pkg, &dest, None, cap).unwrap_err();
+
+    assert!(matches!(err, Error::Security(_)), "{err}");
+    assert!(err.to_string().contains("ceiling"), "{err}");
+    assert!(!dest.exists(), "the archive must never be finalized");
+    assert_eq!(
+        part.metadata().map(|meta| meta.len()).unwrap_or(0),
+        0,
+        "no body byte may reach disk even though an empty .part stub is opened first"
+    );
+}
+
+/// The OTHER ceiling: actual streamed bytes over `max_bytes` when the total
+/// is unknown up front (no Content-Length). The pre-check passes trivially
+/// (`total_size` returns 0 when the header is absent), so only the running
+/// byte count inside the copy loop catches it — and unlike the declared-size
+/// branch above, THIS branch explicitly deletes the `.part`.
+///
+/// `test_support::Server` always emits a truthful, computed Content-Length
+/// for every response, so it cannot express "unknown length" — this test
+/// talks to a minimal hand-rolled loopback listener instead, replying with no
+/// Content-Length and relying on `Connection: close` (a real "close-
+/// delimited" HTTP/1.1 message, RFC 9112 §6.3 case 7) to mark the body's end.
+#[test]
+fn streamed_bytes_over_a_capped_ceiling_are_rejected_and_the_part_is_removed() {
+    use std::io::BufRead;
+    use std::net::TcpListener;
+
+    fn serve_without_content_length(listener: TcpListener, body: Vec<u8>) {
+        let (stream, _) = listener.accept().expect("accept one connection");
+        let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut stream = reader.get_ref().try_clone().expect("clone stream");
+        let mut line = String::new();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).expect("read request line");
+            if line.trim().is_empty() {
+                break;
+            }
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+            .expect("write response head");
+        // The client legitimately hangs up once it hits the ceiling, so a
+        // write/flush error on the body is that expected early hangup, not a
+        // server fault — it must not panic (and so must not fail the join).
+        let _ = stream.write_all(&body);
+        let _ = stream.flush();
+    }
+
+    let temp = TempDir::new().unwrap();
+    let dest = temp.path().join("t.zip");
+    let part = temp.path().join("t.zip.part");
+    let cap = 1024u64;
+    let oversized = vec![0xABu8; cap as usize + 200];
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let body = oversized.clone();
+    let server = thread::spawn(move || serve_without_content_length(listener, body));
+
+    let pkg = package(
+        "21.0.5+11",
+        &format!("http://{addr}/dl/big.zip"),
+        &"a".repeat(64), // never reached: rejected before hashing settles
+        cap + 200,
+    );
+    let err = fetch_archive_capped(&http(), &pkg, &dest, None, cap).unwrap_err();
+
+    assert!(matches!(err, Error::Security(_)), "{err}");
+    assert!(err.to_string().contains("ceiling"), "{err}");
+    assert!(!dest.exists());
+    assert!(
+        !part.exists(),
+        "the poisoned partial must be deleted, not left truncated on disk"
+    );
+
+    // Surface any panic from the server's required phases (accept/read/head)
+    // as a test failure instead of silent stderr noise on a detached thread.
+    server
+        .join()
+        .expect("server thread panicked before serving the response");
+}
+
+/// The cache's single lock must cover the WHOLE round trip — read, the HTTP
+/// GET, and the write — not just the disk read. Two threads racing
+/// `Cache::get` on the same entry, with the server made deliberately slow,
+/// prove this: if the lock released before the network call (the regression
+/// this guards), both threads would see an empty cache and both would hit
+/// the server. With the real (correct) locking, the second caller blocks
+/// until the first's write lands, then reads it back — exactly one fetch.
+#[test]
+fn cache_get_serializes_concurrent_fetches_across_the_http_round_trip() {
+    let temp = TempDir::new().unwrap();
+    let server = Server::start();
+    server.route("/data.json", |_| {
+        thread::sleep(Duration::from_millis(200));
+        Response::ok(b"[1,2,3]".as_slice())
+    });
+
+    let root = temp.path().to_path_buf();
+    let url = server.url().to_string();
+    let spawn_reader = || {
+        let root = root.clone();
+        let url = url.clone();
+        thread::spawn(move || Cache::new(&root).get(&http(), &url, "data.json").unwrap())
+    };
+    let first = spawn_reader();
+    let second = spawn_reader();
+
+    let (body_a, body_b) = (first.join().unwrap(), second.join().unwrap());
+    assert_eq!(body_a, b"[1,2,3]");
+    assert_eq!(body_b, body_a);
+    assert_eq!(
+        server.hits("/data.json"),
+        1,
+        "the whole-call lock must serialize the second caller onto the first's write"
+    );
+}
+
+/// An empty cache plus an unreachable server must propagate the raw HTTP
+/// error (the `None => Err(err)` arm) — never a silent `Ok(vec![])` and never
+/// a panic on the absent cache entry.
+#[test]
+fn get_on_an_empty_cache_with_an_unreachable_server_propagates_the_http_error() {
+    let temp = TempDir::new().unwrap();
+    let cache = Cache::new(temp.path());
+
+    let err = cache.get(&http(), &dead_url(), "index.json").unwrap_err();
+
+    assert!(matches!(err, Error::Http(_)), "{err}");
+}
+
+/// `checksum_type` says "sha256" but the checksum itself is empty or
+/// whitespace-only: the OTHER side of `checksum_type != "sha256" ||
+/// checksum.trim().is_empty()` than the existing md5 test covers.
+#[test]
+fn foojay_sha256_labeled_but_blank_checksum_is_refused() {
+    // The JSON escape for a tab, not a raw control byte (illegal unescaped
+    // inside a JSON string) — parses to the same whitespace-only checksum.
+    for blank in ["", "   ", "\\t"] {
+        let temp = TempDir::new().unwrap();
+        let server = Server::start();
+        server.route("/packages", |_| {
+            Response::ok(
+                r#"{"result":[{"id":"abc","java_version":"21.0.5","distribution":"temurin","release_status":"ga","size":1}]}"#
+                    .as_bytes()
+                    .to_vec(),
+            )
+        });
+        let details = format!(
+            r#"{{"result":[{{"filename":"t.zip","direct_download_uri":"https://adoptium.net/t.zip","checksum":"{blank}","checksum_type":"sha256"}}]}}"#
+        );
+        server.route("/ids/abc", move |_| {
+            Response::ok(details.clone().into_bytes())
+        });
+
+        let catalog = Catalog::with_urls(temp.path(), &dead_url(), server.url());
+        let err = catalog
+            .find(&http(), &"21".parse().unwrap(), "temurin")
+            .unwrap_err();
+
+        assert!(err.to_string().contains("no sha256"), "{blank:?}: {err}");
+    }
+}
+
+/// Two callers racing `install()` for the same `vendor@version` against the
+/// same loopback index: only the lock winner downloads, the loser's post-lock
+/// re-check finds the winner's candidate already in the store ("theirs
+/// wins"), and both callers agree on the final directory.
+#[test]
+fn concurrent_installs_of_the_same_candidate_download_once_and_agree_on_the_winner() {
+    let (_, fake_java) = shim_binaries();
+    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let temp = TempDir::new().unwrap();
+
+    let server = Server::start();
+    let body = zip.clone();
+    server.route("/dl/race.zip", move |_| {
+        thread::sleep(Duration::from_millis(100));
+        Response::ok(body.clone())
+    });
+    let pkg = package(
+        "21.0.5+11",
+        &format!("{}/dl/race.zip", server.url()),
+        &sha256_hex(&zip),
+        zip.len() as u64,
+    );
+
+    let root = temp.path().to_path_buf();
+    let spawn_install = || {
+        let root = root.clone();
+        let pkg = pkg.clone();
+        thread::spawn(move || install(&root, &http(), &pkg, None).unwrap())
+    };
+    let first = spawn_install();
+    let second = spawn_install();
+    let (installed_a, installed_b) = (first.join().unwrap(), second.join().unwrap());
+
+    assert_eq!(
+        server.hits("/dl/race.zip"),
+        1,
+        "only the lock winner may download"
+    );
+    assert_eq!(installed_a.dir, installed_b.dir);
+    assert_ne!(
+        installed_a.fresh, installed_b.fresh,
+        "exactly one caller observes a fresh install, the other the winner's candidate"
+    );
+    assert!(installed_a.dir.join("bin").join("javac.exe").exists());
+}
+
+/// A hostile zip (path traversal) served through the FULL `install()`
+/// pipeline, not `extract_zip` directly: the security error must propagate
+/// out of `install`, nothing may land in the final store, and the staging
+/// directory must be cleaned up.
+#[test]
+fn hostile_zip_traversal_is_rejected_by_the_full_install_pipeline() {
+    let temp = TempDir::new().unwrap();
+    let server = Server::start();
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(&mut cursor);
+    writer
+        .start_file("../evil.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(b"boom").unwrap();
+    writer.finish().unwrap();
+    let evil_zip = cursor.into_inner();
+
+    let pkg = package(
+        "21.0.5+11",
+        &format!("{}/dl/evil.zip", server.url()),
+        &sha256_hex(&evil_zip),
+        evil_zip.len() as u64,
+    );
+    serve_catalog(&server, std::slice::from_ref(&pkg));
+    let body = evil_zip.clone();
+    server.route("/dl/evil.zip", move |_| Response::ok(body.clone()));
+
+    let http = http();
+    let catalog = Catalog::with_urls(temp.path(), server.url(), &dead_url());
+    let found = catalog
+        .find(&http, &"temurin@21".parse().unwrap(), "temurin")
+        .unwrap();
+
+    let err = install(temp.path(), &http, &found, None).unwrap_err();
+
+    assert!(matches!(err, Error::Security(_)), "{err}");
+    assert!(
+        !store::java_candidates(temp.path())
+            .join("temurin@21.0.5+11")
+            .exists(),
+        "nothing may reach the store"
+    );
+    let staging = store::cache(temp.path())
+        .join("staging")
+        .join("temurin@21.0.5+11");
+    assert!(!staging.exists(), "staging must be cleaned up on failure");
+}
+
+/// The index is reachable but its `vendor_packages` list is empty for this
+/// platform (as opposed to entirely missing the vendor, which errors) — the
+/// `Ok(_) if list.is_empty()` arm of `Catalog::available` must still fall
+/// through to the live foojay listing.
+#[test]
+fn available_falls_back_to_foojay_when_the_index_lists_nothing_for_the_platform() {
+    let temp = TempDir::new().unwrap();
+    let (os, arch) = current_platform();
+    let server = Server::start();
+
+    let empty_body = b"[]".to_vec();
+    let platform_path = format!("{os}-{arch}/temurin.json");
+    let index = IndexFile {
+        version: 1,
+        updated: "2026-07-17T00:00:00Z".to_string(),
+        files: vec![IndexEntry {
+            path: platform_path.clone(),
+            vendor: "temurin".to_string(),
+            os: os.to_string(),
+            arch: arch.to_string(),
+            size: empty_body.len() as u64,
+            sha256: sha256_hex(&empty_body),
+        }],
+    };
+    let index_json = serde_json::to_vec(&index).unwrap();
+    server.route("/index.json", move |_| Response::ok(index_json.clone()));
+    let platform_body = empty_body.clone();
+    server.route(&format!("/{platform_path}"), move |_| {
+        Response::ok(platform_body.clone())
+    });
+    server.route("/packages", |_| {
+        Response::ok(
+            r#"{"result":[{"id":"abc","java_version":"21.0.5+11","distribution":"temurin","term_of_support":"lts","release_status":"ga","size":1}]}"#
+                .as_bytes()
+                .to_vec(),
+        )
+    });
+
+    let catalog = Catalog::with_urls(temp.path(), server.url(), server.url());
+    let list = catalog.available(&http(), "temurin", os, arch).unwrap();
+
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].version, "21.0.5+11");
+    assert_eq!(
+        server.hits("/packages"),
+        1,
+        "an empty index listing must still be consulted through foojay"
+    );
+}
+
+/// The index is reachable and answers, but simply has no version matching
+/// the selector — distinct from an unreachable index, which fails at the
+/// network level instead. The combined error must name that specific cause
+/// ("index has no ...") and the foojay fallback must actually be consulted.
+#[test]
+fn index_reachable_but_no_matching_version_falls_through_to_foojay_with_a_combined_error() {
+    let temp = TempDir::new().unwrap();
+    let server = Server::start();
+
+    let old = package("17.0.9", "https://adoptium.net/x.zip", &"a".repeat(64), 1);
+    serve_catalog(&server, std::slice::from_ref(&old));
+    server.route("/packages", |_| {
+        Response::ok(r#"{"result":[]}"#.as_bytes().to_vec())
+    });
+
+    let catalog = Catalog::with_urls(temp.path(), server.url(), server.url());
+    let err = catalog
+        .find(&http(), &"temurin@99".parse().unwrap(), "temurin")
+        .unwrap_err();
+
+    assert!(err.to_string().contains("index has no"), "{err}");
+    assert_eq!(
+        server.hits("/packages"),
+        1,
+        "the index miss must still fall through to a foojay lookup"
+    );
 }

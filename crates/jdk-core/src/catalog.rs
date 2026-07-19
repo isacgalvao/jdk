@@ -251,4 +251,88 @@ mod tests {
     fn pick_best_of_nothing_is_none() {
         assert_eq!(pick_best::<&str>(Vec::new()), None);
     }
+
+    /// Cross-checks that [`pick_best`]'s ranking selects the same version the
+    /// installed store's `jdk_resolve::store::best_candidate` would, for
+    /// realistic catalog data. The catalog side derives `stable` with the SAME
+    /// expression production uses (`release_status == Ga && pre_release.is_none()`
+    /// — see [`Catalog::find_in_index`]), NOT a `pre_release`-only shortcut, so a
+    /// drift in either ranker surfaces here. The two `stable` rules coincide for
+    /// well-formed data because every EA build carries a `-ea` pre-release
+    /// component in its version, which is what lets the store — which sees only
+    /// the version, never the release status — agree. A small fixed dataset
+    /// stands in for a property test.
+    #[test]
+    fn pick_best_agrees_with_store_best_candidate_across_scenarios() {
+        use jdk_resolve::store;
+        use std::fs;
+        use tempfile::TempDir;
+
+        // (version, release_status) per candidate. EA builds carry a `-ea`
+        // component, matching what foojay serves.
+        type Ver = (&'static str, ReleaseStatus);
+        let scenarios: &[(&[Ver], &str)] = &[
+            (
+                &[
+                    ("21.0.5", ReleaseStatus::Ga),
+                    ("21.0.6-ea", ReleaseStatus::Ea),
+                ],
+                "21",
+            ), // stable beats a newer EA
+            (
+                &[("21.0.4", ReleaseStatus::Ga), ("21.0.5", ReleaseStatus::Ga)],
+                "21",
+            ), // higher stable wins
+            (
+                &[
+                    ("22-ea", ReleaseStatus::Ea),
+                    ("22.0.1-ea", ReleaseStatus::Ea),
+                ],
+                "22",
+            ), // both EA: the higher one wins
+            (
+                &[
+                    ("21.0.4+7", ReleaseStatus::Ga),
+                    ("21.0.4+8", ReleaseStatus::Ga),
+                ],
+                "21.0.4",
+            ), // build disambiguates a tie
+            (
+                &[("17.0.9", ReleaseStatus::Ga), ("21.0.4", ReleaseStatus::Ga)],
+                "17",
+            ), // prefix selection
+        ];
+
+        for (versions, pattern) in scenarios {
+            let temp = TempDir::new().unwrap();
+            for (version, _) in *versions {
+                fs::create_dir_all(
+                    store::java_candidates(temp.path()).join(format!("temurin@{version}")),
+                )
+                .unwrap();
+            }
+            let selector: Selector = pattern.parse().unwrap();
+
+            let from_store = store::best_candidate(temp.path(), &selector, "temurin")
+                .unwrap()
+                .map(|candidate| candidate.version);
+
+            let candidates: Vec<(Version, bool, Version)> = versions
+                .iter()
+                .map(|(s, status)| (v(s), *status))
+                .filter(|(version, _)| version.matches(&selector.version))
+                .map(|(version, status)| {
+                    // The production expression, verbatim (`find_in_index`).
+                    let stable = status == ReleaseStatus::Ga && version.pre_release.is_none();
+                    (version.clone(), stable, version)
+                })
+                .collect();
+            let from_catalog = pick_best(candidates);
+
+            assert_eq!(
+                from_catalog, from_store,
+                "pick_best vs best_candidate disagree for pattern {pattern:?} over {versions:?}"
+            );
+        }
+    }
 }
