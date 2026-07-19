@@ -43,7 +43,7 @@ or macOS, this is the piece Windows was missing: clone a project that ships a
   console and IDE picks up the new JDK on its next `java` call. No restart, no
   logoff.
 - **Multi-vendor catalog.** Temurin, Zulu, Corretto, Liberica, Microsoft,
-  GraalVM, and more — sourced from the foojay Disco API.
+  GraalVM, Oracle, and more — sourced from the foojay Disco API.
 - **One small binary.** A focused Rust CLI plus a tiny per-tool shim. No JVM, no
   runtime, no service.
 

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-19
+
+### Added
+
+- Oracle JDK as an installable vendor — `jdk install oracle@25` — sourced from the foojay Disco API with the same mandatory SHA-256 verification as every other vendor.
+- A license notice shown before download for the vendors under proprietary terms: Oracle JDK (NFTC) and Oracle GraalVM (GFTC).
+
 ## [0.1.0] - 2026-07-18
 
 First public release — a Windows-first Java version manager.
@@ -23,5 +30,6 @@ First public release — a Windows-first Java version manager.
 - PowerShell installer (`install.ps1`) with SHA-256 verification, plus release zips carrying `jdk.exe`, `jdk-shim.exe`, `LICENSE` and `README.md` alongside `.sha256` sidecars.
 - Published on crates.io: [`jdk`](https://crates.io/crates/jdk), [`jdk-core`](https://crates.io/crates/jdk-core) and [`jdk-resolve`](https://crates.io/crates/jdk-resolve).
 
-[Unreleased]: https://github.com/isacgalvao/jdk/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/isacgalvao/jdk/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.2.0
 [0.1.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.1.0
