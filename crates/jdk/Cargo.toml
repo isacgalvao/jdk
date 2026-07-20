@@ -14,7 +14,7 @@ jdk-resolve = { path = "../jdk-resolve", version = "0.2.0" }
 clap = { version = "4", features = ["derive"] }
 # Progress rendering lives here, never in jdk-core (which only exposes a
 # callback) — the engine stays UI-free.
-indicatif = "0.17"
+indicatif = "0.18"
 
 [dev-dependencies]
 tempfile = "3"
