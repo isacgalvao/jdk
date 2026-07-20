@@ -6,6 +6,7 @@
 use crate::fail::Fail;
 use crate::{remote, uninstall};
 use indicatif::{ProgressBar, ProgressStyle};
+use jdk_core::catalog::Origin;
 use jdk_core::current::{self, Current};
 use std::path::Path;
 
@@ -15,10 +16,17 @@ pub fn run(root: &Path, selector: &str, from_shim: bool) -> Result<(), Fail> {
     let config = crate::config(root)?;
     let (http, catalog) = remote::client(root)?;
 
-    let package = catalog
+    let (package, origin) = catalog
         .find(&http, &selector, &config.vendor)
         .map_err(Fail::engine)?;
     let name = format!("{}@{}", package.vendor, package.version);
+
+    // A live-API resolution means the index did not carry this build (a fresh
+    // release, or an exact EA build below the line's indexed latest) — say so,
+    // since it is slower and unverified against the index's pinned sha256.
+    if origin == Origin::Foojay {
+        eprintln!("jdk: {name} resolved live from foojay (not in the index)");
+    }
 
     // Proprietary-vendor terms, shown before the binary is fetched — in the
     // shim path too, where the user is otherwise handed the download silently.

@@ -25,6 +25,16 @@ pub struct Available {
     pub release_status: ReleaseStatus,
 }
 
+/// Where [`Catalog::find`] resolved a package from — surfaced so the CLI can
+/// tell the user when an install came from the live API rather than the index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// The static, checksum-verified index.
+    Index,
+    /// The live foojay Disco API, queried because the index could not answer.
+    Foojay,
+}
+
 pub struct Catalog {
     cache: Cache,
     index_url: String,
@@ -49,18 +59,24 @@ impl Catalog {
     /// then the highest version. Any index failure — unreachable, unknown
     /// vendor, or simply no matching version (the live API may know a release
     /// a day-old index does not) — falls through to foojay, and a total miss
-    /// reports both causes.
-    pub fn find(&self, http: &Http, selector: &Selector, default_vendor: &str) -> Result<Package> {
+    /// reports both causes. Returns the package with its [`Origin`] so the
+    /// caller can tell the user when it came from the live API.
+    pub fn find(
+        &self,
+        http: &Http,
+        selector: &Selector,
+        default_vendor: &str,
+    ) -> Result<(Package, Origin)> {
         let vendor = normalize_vendor(selector.vendor.as_deref().unwrap_or(default_vendor));
         let (os, arch) = current_platform();
         let pattern = &selector.version;
 
         let from_index = self.find_in_index(http, &vendor, pattern, os, arch);
         match from_index {
-            Ok(package) => Ok(package),
+            Ok(package) => Ok((package, Origin::Index)),
             Err(index_err) => {
                 match foojay::find(http, &self.foojay_url, &vendor, pattern, os, arch) {
-                    Ok(package) => Ok(package),
+                    Ok(package) => Ok((package, Origin::Foojay)),
                     Err(foojay_err) => Err(Error::Catalog(format!(
                         "no installable package for {vendor}@{pattern}\n  index: {index_err}\n  foojay fallback: {foojay_err}"
                     ))),

@@ -6,7 +6,7 @@
 
 use jdk_core::Error;
 use jdk_core::cache::Cache;
-use jdk_core::catalog::Catalog;
+use jdk_core::catalog::{Catalog, Origin};
 use jdk_core::download::{MAX_ARCHIVE, fetch_archive, fetch_archive_capped, sha256_hex};
 use jdk_core::http::{Http, Retry, UrlPolicy};
 use jdk_core::index::{IndexEntry, IndexFile, current_platform};
@@ -58,9 +58,10 @@ fn installs_a_fake_jdk_from_a_local_index_and_the_shim_runs_it() {
 
     let http = http();
     let catalog = Catalog::with_urls(&root, server.url(), &dead_url());
-    let found = catalog
+    let (found, origin) = catalog
         .find(&http, &"temurin@21".parse().unwrap(), "temurin")
         .unwrap();
+    assert_eq!(origin, Origin::Index);
     assert_eq!(found.version, "21.0.5+11");
 
     let mut events = Vec::new();
@@ -618,9 +619,10 @@ fn foojay_fallback_when_the_index_is_unreachable() {
 
     let http = http();
     let catalog = Catalog::with_urls(temp.path(), &dead_url(), server.url());
-    let found = catalog
+    let (found, origin) = catalog
         .find(&http, &"21".parse().unwrap(), "temurin")
         .unwrap();
+    assert_eq!(origin, Origin::Foojay);
     assert_eq!(found.version, "21.0.5+11");
     assert_eq!(found.sha256, sha256_hex(&zip));
     assert!(found.lts);
@@ -996,7 +998,7 @@ fn hostile_zip_traversal_is_rejected_by_the_full_install_pipeline() {
 
     let http = http();
     let catalog = Catalog::with_urls(temp.path(), server.url(), &dead_url());
-    let found = catalog
+    let (found, _) = catalog
         .find(&http, &"temurin@21".parse().unwrap(), "temurin")
         .unwrap();
 

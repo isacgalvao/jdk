@@ -52,7 +52,7 @@ pub fn available(
     os: &str,
     arch: &str,
 ) -> Result<Vec<Available>> {
-    let url = packages_url(base_url, vendor, os, arch);
+    let url = packages_url(base_url, vendor, os, arch, "ga", None);
     let listing: Envelope<Listing> = fetch_json(http, &url)?;
     Ok(listing
         .result
@@ -77,7 +77,16 @@ pub fn find(
     os: &str,
     arch: &str,
 ) -> Result<Package> {
-    let url = packages_url(base_url, vendor, os, arch);
+    // Widen to EA only when the caller asked for a pre-release: a plain `21`
+    // stays GA-only, but `27-ea` (or a specific `27-ea+30` the index — capped
+    // to the line's latest — does not carry) reaches the live EA builds. No
+    // `latest` cap here, so an exact older build is still resolvable.
+    let status = if pattern.pre_release.is_some() {
+        "ea,ga"
+    } else {
+        "ga"
+    };
+    let url = packages_url(base_url, vendor, os, arch, status, None);
     let listing: Envelope<Listing> = fetch_json(http, &url)?;
 
     let mut candidates = Vec::new();
@@ -147,15 +156,25 @@ fn release_status(raw: Option<&str>) -> ReleaseStatus {
     }
 }
 
-/// The exact Windows foojay query, parameterized by vendor.
-fn packages_url(base_url: &str, vendor: &str, os: &str, arch: &str) -> String {
+/// The exact Windows foojay query, parameterized by vendor. `release_status`
+/// is `ga` or `ea,ga`; `latest` (e.g. `available`) caps to one build per line
+/// — the live fallback passes `None` so an exact older build stays resolvable.
+fn packages_url(
+    base_url: &str,
+    vendor: &str,
+    os: &str,
+    arch: &str,
+    release_status: &str,
+    latest: Option<&str>,
+) -> String {
     let arch_param = match arch {
         "x64" => "amd64,x64",
         "aarch64" => "arm64,aarch64",
         other => other,
     };
+    let latest = latest.map(|l| format!("&latest={l}")).unwrap_or_default();
     format!(
-        "{}/packages?operating_system={os}&architecture={arch_param}&archive_type=zip&lib_c_type=c_std_lib&package_type=jdk&release_status=ga&distribution={vendor}",
+        "{}/packages?operating_system={os}&architecture={arch_param}&archive_type=zip&lib_c_type=c_std_lib&package_type=jdk&release_status={release_status}{latest}&distribution={vendor}",
         base_url.trim_end_matches('/')
     )
 }
@@ -166,7 +185,7 @@ mod tests {
 
     #[test]
     fn windows_query_is_exact() {
-        let url = packages_url(DEFAULT_URL, "temurin", "windows", "x64");
+        let url = packages_url(DEFAULT_URL, "temurin", "windows", "x64", "ga", None);
         assert_eq!(
             url,
             "https://api.foojay.io/disco/v3.0/packages?operating_system=windows&architecture=amd64,x64&archive_type=zip&lib_c_type=c_std_lib&package_type=jdk&release_status=ga&distribution=temurin"
@@ -174,8 +193,15 @@ mod tests {
     }
 
     #[test]
+    fn a_pre_release_query_widens_to_ea() {
+        let url = packages_url(DEFAULT_URL, "temurin", "windows", "x64", "ea,ga", None);
+        assert!(url.contains("release_status=ea,ga"), "{url}");
+        assert!(!url.contains("latest="), "the live fallback never caps: {url}");
+    }
+
+    #[test]
     fn aarch64_query_uses_the_arm_alias() {
-        let url = packages_url(DEFAULT_URL, "zulu", "windows", "aarch64");
+        let url = packages_url(DEFAULT_URL, "zulu", "windows", "aarch64", "ga", None);
         assert!(url.contains("architecture=arm64,aarch64"), "{url}");
         assert!(url.contains("distribution=zulu"), "{url}");
     }
