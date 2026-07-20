@@ -8,7 +8,7 @@
 use crate::catalog::{Available, pick_best};
 use crate::error::{Error, Result};
 use crate::http::{Http, MAX_BODY};
-use crate::index::{Package, ReleaseStatus};
+use crate::index::{Package, ReleaseStatus, is_stable};
 use jdk_resolve::version::Version;
 use serde::Deserialize;
 
@@ -88,7 +88,7 @@ pub fn find(
         if !version.matches(pattern) {
             continue;
         }
-        let stable = pkg.release_status.as_deref() != Some("ea") && version.pre_release.is_none();
+        let stable = is_stable(release_status(pkg.release_status.as_deref()), &version);
         candidates.push((version, stable, pkg));
     }
     let Some(chosen) = pick_best(candidates) else {

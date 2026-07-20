@@ -7,7 +7,7 @@
 use crate::fail::Fail;
 use crate::remote;
 use jdk_core::catalog::Available;
-use jdk_core::index::{ReleaseStatus, current_platform};
+use jdk_core::index::{ReleaseStatus, current_platform, is_stable};
 use jdk_resolve::exit;
 use jdk_resolve::selector::normalize_vendor;
 use jdk_resolve::version::Version;
@@ -110,13 +110,12 @@ fn trim_to_latest(rows: Vec<(Version, Available)>) -> Vec<(Version, Available)> 
     let mut best: Vec<(Version, Available)> = Vec::new();
     for (version, entry) in rows {
         let major = version.components.first().copied().unwrap_or(0);
-        let stable = entry.release_status == ReleaseStatus::Ga && version.pre_release.is_none();
+        let stable = is_stable(entry.release_status, &version);
         match best.iter_mut().find(|(v, e)| {
             e.vendor == entry.vendor && v.components.first().copied().unwrap_or(0) == major
         }) {
             Some(slot) => {
-                let slot_stable =
-                    slot.1.release_status == ReleaseStatus::Ga && slot.0.pre_release.is_none();
+                let slot_stable = is_stable(slot.1.release_status, &slot.0);
                 if (stable, &version) > (slot_stable, &slot.0) {
                     *slot = (version, entry);
                 }

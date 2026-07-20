@@ -16,6 +16,7 @@
 //! recompute `size`/`sha256` on every publish.
 
 use crate::error::{Error, Result};
+use jdk_resolve::version::Version;
 use serde::{Deserialize, Serialize};
 
 /// Schema version this client understands. Bumped only for breaking changes;
@@ -105,6 +106,17 @@ pub struct Package {
 pub enum ReleaseStatus {
     Ga,
     Ea,
+}
+
+/// Whether a catalog entry is a stable release: GA status *and* no pre-release
+/// component in its version. Both axes are checked so an entry mislabeled on
+/// either one ranks below a true stable. This is the shared ranking predicate
+/// for catalog data (index and foojay); the installed store cannot use it —
+/// it records only the version, never the release status — and relies on
+/// `version.pre_release.is_none()` alone, which coincides because every EA
+/// build carries a `-ea` pre-release (see [`crate::catalog::pick_best`]).
+pub fn is_stable(status: ReleaseStatus, version: &Version) -> bool {
+    status == ReleaseStatus::Ga && version.pre_release.is_none()
 }
 
 /// The `(os, arch)` pair the running binary installs for, in index vocabulary.

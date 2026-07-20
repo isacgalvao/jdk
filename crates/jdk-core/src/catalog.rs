@@ -7,7 +7,7 @@ use crate::download::sha256_hex;
 use crate::error::{Error, Result};
 use crate::foojay;
 use crate::http::Http;
-use crate::index::{IndexEntry, IndexFile, Package, ReleaseStatus, current_platform};
+use crate::index::{IndexEntry, IndexFile, Package, ReleaseStatus, current_platform, is_stable};
 use jdk_resolve::selector::{Selector, normalize_vendor};
 use jdk_resolve::version::Version;
 use std::path::Path;
@@ -88,7 +88,7 @@ impl Catalog {
                 if !version.matches(pattern) {
                     return None;
                 }
-                let stable = p.release_status == ReleaseStatus::Ga && version.pre_release.is_none();
+                let stable = is_stable(p.release_status, &version);
                 Some((version, stable, p))
             })
             .collect();
