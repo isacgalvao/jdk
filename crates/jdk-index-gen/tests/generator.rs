@@ -141,10 +141,16 @@ fn serve_foojay(server: &Server, packages: Vec<Fake>) {
         } else {
             "x64"
         };
+        // The generator issues one GA query and one EA (`latest=available`)
+        // query per vendor+arch; real foojay filters on release_status, so the
+        // fake must too — otherwise every package answers both and duplicates.
+        let want_ea = query.contains("release_status=ea");
         let items: Vec<String> = packages
             .iter()
             .filter(|fake| {
-                fake.arch == arch && query.contains(&format!("distribution={}", fake.vendor))
+                fake.arch == arch
+                    && fake.ea == want_ea
+                    && query.contains(&format!("distribution={}", fake.vendor))
             })
             .map(|fake| {
                 format!(
@@ -494,7 +500,8 @@ fn a_best_effort_vendor_transport_error_does_not_abort_the_publish() {
         if query.contains("distribution=oracle") {
             return Response::empty(500);
         }
-        if query.contains("architecture=arm64,aarch64") {
+        // These fakes are all GA; the EA (`latest=available`) query answers empty.
+        if query.contains("architecture=arm64,aarch64") || query.contains("release_status=ea") {
             return Response::ok(r#"{"result":[]}"#.to_string());
         }
         let listed: Vec<String> = items

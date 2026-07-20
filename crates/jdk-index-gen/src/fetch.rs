@@ -1,13 +1,15 @@
 //! Foojay Disco API → [`Package`] lists, one vendor+arch at a time.
 //!
-//! The platform filters are the exact Windows foojay queries — GA-only
-//! included: a trial run with `release_status=ea,ga` dragged in vendors' EA
-//! *nightlies* (temurin alone: dozens of beta builds per version), bloating
-//! the index and churning it daily, so EA stays out of v0.1 by decision. One
-//! generator-only widening over the runtime fallback in `jdk_core::foojay`:
-//! `javafx_bundled=false` (an FX bundle would collide with the plain JDK
-//! under the same version key). The `release_status` → EA mapping is kept for
-//! schema completeness should the query ever widen.
+//! The platform filters are the exact Windows foojay queries. GA is fetched
+//! in full — every published patch — while early-access is fetched with
+//! `latest=available`, one build per EA line: a plain `release_status=ea,ga`
+//! dragged in vendors' EA *nightlies* (temurin alone: ~720 EA versions to
+//! ~100 GA, dozens of builds per line), which `latest` collapses to the ~15
+//! current lines per vendor. Two generator-only widenings over the runtime
+//! fallback in `jdk_core::foojay`: `javafx_bundled=false` (an FX bundle would
+//! collide with the plain JDK under the same version key), and the
+//! `latest=available` EA cap the live fallback deliberately omits so it can
+//! still resolve an exact older EA build on demand.
 //!
 //! # sha256 resolution chain
 //!
@@ -131,9 +133,13 @@ pub fn vendor_packages(
     published: Option<&Published>,
     hash_budget: Option<u32>,
 ) -> Result<Fetched> {
-    let url = packages_url(base_url, vendor, arch);
-    let listing: Envelope<Listing> = fetch_json(http, &url)?;
-    let items = listing.result;
+    // GA in full (every patch); EA capped to one build per line via
+    // `latest=available` so vendors' nightly churn cannot bloat the index. The
+    // live fallback stays uncapped, resolving exact older builds on demand.
+    let ga_url = packages_url(base_url, vendor, arch, "ga", None);
+    let ea_url = packages_url(base_url, vendor, arch, "ea", Some("available"));
+    let mut items = fetch_json::<Envelope<Listing>>(http, &ga_url)?.result;
+    items.extend(fetch_json::<Envelope<Listing>>(http, &ea_url)?.result);
 
     let resolved = fetch_details(http, base_url, &items, jobs)?;
 
@@ -451,16 +457,24 @@ pub(crate) fn is_hex_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// The exact Windows foojay platform filters (GA-only) plus the generator's
-/// `javafx_bundled=false` — see the module doc.
-fn packages_url(base_url: &str, vendor: &str, arch: &str) -> String {
+/// The exact Windows foojay platform filters plus the generator's
+/// `javafx_bundled=false` — see the module doc. `release_status` is `ga` or
+/// `ea`; `latest` (e.g. `available`) caps a status to one build per line.
+fn packages_url(
+    base_url: &str,
+    vendor: &str,
+    arch: &str,
+    release_status: &str,
+    latest: Option<&str>,
+) -> String {
     let arch_param = match arch {
         "x64" => "amd64,x64",
         "aarch64" => "arm64,aarch64",
         other => other,
     };
+    let latest = latest.map(|l| format!("&latest={l}")).unwrap_or_default();
     format!(
-        "{}/packages?operating_system=windows&architecture={arch_param}&archive_type=zip&lib_c_type=c_std_lib&package_type=jdk&release_status=ga&javafx_bundled=false&distribution={vendor}",
+        "{}/packages?operating_system=windows&architecture={arch_param}&archive_type=zip&lib_c_type=c_std_lib&package_type=jdk&release_status={release_status}&javafx_bundled=false{latest}&distribution={vendor}",
         base_url.trim_end_matches('/')
     )
 }
@@ -470,8 +484,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn query_is_ga_plus_the_fx_filter() {
-        let url = packages_url("https://api.foojay.io/disco/v3.0", "temurin", "x64");
+    fn ga_query_is_full_history_no_latest_cap() {
+        let url = packages_url("https://api.foojay.io/disco/v3.0", "temurin", "x64", "ga", None);
         assert_eq!(
             url,
             "https://api.foojay.io/disco/v3.0/packages?operating_system=windows&architecture=amd64,x64&archive_type=zip&lib_c_type=c_std_lib&package_type=jdk&release_status=ga&javafx_bundled=false&distribution=temurin"
@@ -479,8 +493,21 @@ mod tests {
     }
 
     #[test]
+    fn ea_query_caps_to_the_latest_of_each_line() {
+        let url = packages_url(
+            "https://api.foojay.io/disco/v3.0",
+            "temurin",
+            "x64",
+            "ea",
+            Some("available"),
+        );
+        assert!(url.contains("release_status=ea"), "{url}");
+        assert!(url.contains("latest=available"), "{url}");
+    }
+
+    #[test]
     fn aarch64_query_uses_the_arm_alias() {
-        let url = packages_url("https://x.example/", "zulu", "aarch64");
+        let url = packages_url("https://x.example/", "zulu", "aarch64", "ga", None);
         assert!(url.contains("architecture=arm64,aarch64"), "{url}");
         assert!(url.contains("distribution=zulu"), "{url}");
     }
