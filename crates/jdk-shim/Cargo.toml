@@ -12,7 +12,7 @@ publish.workspace = true
 # no async, no parsers beyond jdk-resolve.
 [dependencies]
 jdk-resolve = { path = "../jdk-resolve" }
-windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
 
 # Dev-only (the runtime firewall above is untouched): the auto-install e2e
 # serves a loopback catalog and drives the real jdk.exe.
