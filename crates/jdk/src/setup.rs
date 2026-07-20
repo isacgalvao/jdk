@@ -277,8 +277,7 @@ fn ensure_junction(root: &Path, config: &Config) -> Result<(), Fail> {
             Ok(())
         }
         current::Current::Absent => {
-            let scan_fail = |err| Fail::new(exit::FAILURE, format!("cannot scan the store: {err}"));
-            match eligible_global(root).map_err(scan_fail)? {
+            match eligible_global(root).map_err(Fail::scan)? {
                 Some(candidate) => {
                     current::retarget(root, &candidate.dir).map_err(Fail::engine)?;
                     eprintln!(

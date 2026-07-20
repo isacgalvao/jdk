@@ -7,13 +7,12 @@
 
 use crate::catalog::{Available, pick_best};
 use crate::error::{Error, Result};
-use crate::http::Http;
+use crate::http::{Http, MAX_BODY};
 use crate::index::{Package, ReleaseStatus};
 use jdk_resolve::version::Version;
 use serde::Deserialize;
 
 pub const DEFAULT_URL: &str = "https://api.foojay.io/disco/v3.0";
-const MAX_BODY: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct Envelope<T> {
@@ -62,10 +61,7 @@ pub fn available(
             vendor: vendor.to_string(),
             version: pkg.java_version,
             lts: pkg.term_of_support.as_deref() == Some("lts"),
-            release_status: match pkg.release_status.as_deref() {
-                Some("ea") => ReleaseStatus::Ea,
-                _ => ReleaseStatus::Ga,
-            },
+            release_status: release_status(pkg.release_status.as_deref()),
         })
         .collect())
 }
@@ -122,10 +118,7 @@ pub fn find(
         version: chosen.java_version,
         os: os.to_string(),
         arch: arch.to_string(),
-        release_status: match chosen.release_status.as_deref() {
-            Some("ea") => ReleaseStatus::Ea,
-            _ => ReleaseStatus::Ga,
-        },
+        release_status: release_status(chosen.release_status.as_deref()),
         lts: chosen.term_of_support.as_deref() == Some("lts"),
         size: chosen.size,
         sha256: details.checksum.trim().to_ascii_lowercase(),
@@ -143,6 +136,15 @@ fn fetch_json<T: serde::de::DeserializeOwned>(http: &Http, url: &str) -> Result<
     }
     serde_json::from_slice(&reply.bytes(MAX_BODY)?)
         .map_err(|err| Error::Catalog(format!("unparseable foojay response from {url}: {err}")))
+}
+
+/// Maps foojay's `release_status` field to [`ReleaseStatus`]: only the
+/// explicit `"ea"` marker is early-access; everything else is treated as GA.
+fn release_status(raw: Option<&str>) -> ReleaseStatus {
+    match raw {
+        Some("ea") => ReleaseStatus::Ea,
+        _ => ReleaseStatus::Ga,
+    }
 }
 
 /// The exact Windows foojay query, parameterized by vendor.

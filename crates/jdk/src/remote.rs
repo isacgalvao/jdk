@@ -14,11 +14,7 @@ use std::path::Path;
 pub fn client(root: &Path) -> Result<(Http, Catalog), Fail> {
     let index = env_url("JDK_INDEX");
     let foojay = env_url("JDK_FOOJAY");
-    let policy = if index.is_some() || foojay.is_some() {
-        UrlPolicy::AllowInsecureLoopback
-    } else {
-        UrlPolicy::Strict
-    };
+    let policy = url_policy(index.as_deref(), foojay.as_deref());
     let catalog = Catalog::with_urls(
         root,
         index.as_deref().unwrap_or(DEFAULT_INDEX_URL),
@@ -26,6 +22,17 @@ pub fn client(root: &Path) -> Result<(Http, Catalog), Fail> {
     );
     let http = Http::new(policy).map_err(Fail::engine)?;
     Ok((http, catalog))
+}
+
+/// The URL policy for the given overrides: an index/foojay override admits
+/// plain-http loopback (local mirrors, hermetic tests); the no-override
+/// default is strict https-only. Shared with doctor's reachability probe.
+pub fn url_policy(index: Option<&str>, foojay: Option<&str>) -> UrlPolicy {
+    if index.is_some() || foojay.is_some() {
+        UrlPolicy::AllowInsecureLoopback
+    } else {
+        UrlPolicy::Strict
+    }
 }
 
 /// A URL-override env var (`JDK_INDEX` / `JDK_FOOJAY`), trimmed; empty

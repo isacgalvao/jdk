@@ -4,14 +4,13 @@
 
 use crate::fail::Fail;
 use crate::uninstall;
-use jdk_resolve::{exit, store};
+use jdk_resolve::store;
 use std::fs;
 use std::path::Path;
 
 pub fn run(root: &Path) -> Result<(), Fail> {
     uninstall::sweep_orphans(root);
-    let installed = store::installed(root)
-        .map_err(|err| Fail::new(exit::FAILURE, format!("cannot scan the store: {err}")))?;
+    let installed = store::installed(root).map_err(Fail::scan)?;
     if installed.is_empty() {
         eprintln!("jdk: no JDKs installed");
         eprintln!("  → jdk install temurin@21");

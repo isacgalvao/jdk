@@ -55,7 +55,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
-const MAX_BODY: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_BODY: u64 = 32 * 1024 * 1024;
 const MAX_CHECKSUM_FILE: u64 = 64 * 1024;
 /// Bigger than any real JDK zip (~200–300 MB) but small enough to bound the
 /// time an endless body can waste; over the cap the hash is discarded.
@@ -400,15 +400,17 @@ fn tofu_sha256(http: &Http, url: &str, announced_sha1: Option<&str>) -> Result<S
     Ok(jdk_core::download::hex(&sha256.finalize()))
 }
 
-fn fetch_json<T: serde::de::DeserializeOwned>(http: &Http, url: &str) -> Result<T> {
+/// GET `url`, erroring on any non-200, and read the body capped at `cap` bytes.
+pub(crate) fn get_ok_bytes(http: &Http, url: &str, cap: u64) -> Result<Vec<u8>> {
     let reply = http.get(url, "jdk-index-gen", &[])?;
     if reply.status() != 200 {
-        return Err(Error::Http(format!(
-            "GET {url} returned {}",
-            reply.status()
-        )));
+        return Err(Error::Http(format!("GET {url} returned {}", reply.status())));
     }
-    serde_json::from_slice(&reply.bytes(MAX_BODY)?)
+    reply.bytes(cap)
+}
+
+fn fetch_json<T: serde::de::DeserializeOwned>(http: &Http, url: &str) -> Result<T> {
+    serde_json::from_slice(&get_ok_bytes(http, url, MAX_BODY)?)
         .map_err(|err| Error::Catalog(format!("unparseable foojay response from {url}: {err}")))
 }
 
@@ -445,7 +447,7 @@ fn is_mutable_oracle(url: &str) -> bool {
     lower.contains("download.oracle.com") && lower.contains("/latest/")
 }
 
-fn is_hex_sha256(text: &str) -> bool {
+pub(crate) fn is_hex_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 

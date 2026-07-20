@@ -41,8 +41,7 @@ pub fn run(root: &Path, selector: &str) -> Result<(), Fail> {
     })?;
     eprintln!("jdk: pinned java={selector} in {}", path.display());
 
-    let installed = store::best_candidate(root, &selector, &config.vendor)
-        .map_err(|err| Fail::new(exit::FAILURE, format!("cannot scan the store: {err}")))?;
+    let installed = store::best_candidate(root, &selector, &config.vendor).map_err(Fail::scan)?;
     if installed.is_none() {
         eprintln!("jdk: note: {selector} is not installed yet");
         eprintln!("  → jdk install {selector}");

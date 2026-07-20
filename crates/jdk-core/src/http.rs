@@ -319,6 +319,10 @@ fn absolutize(base: &str, location: &str) -> String {
     }
 }
 
+/// Upper bound for any single JSON body (catalog files and foojay replies):
+/// 32 MiB.
+pub(crate) const MAX_BODY: u64 = 32 * 1024 * 1024;
+
 /// A non-redirect response plus the final URL that produced it.
 pub struct Reply {
     url: String,

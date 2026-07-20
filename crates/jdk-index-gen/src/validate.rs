@@ -94,7 +94,7 @@ fn well_formed(path: &str, entry: &jdk_core::index::IndexEntry, package: &Packag
     if package.version.parse::<Version>().is_err() {
         return complain("unparseable version");
     }
-    if package.sha256.len() != 64 || !package.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if !crate::fetch::is_hex_sha256(&package.sha256) {
         return complain("sha256 is not 64 hex chars");
     }
     if package.url.is_empty() {
@@ -297,14 +297,7 @@ fn load_published(
 }
 
 fn fetch_bytes(http: &Http, url: &str) -> Result<Vec<u8>> {
-    let reply = http.get(url, "jdk-index-gen", &[])?;
-    if reply.status() != 200 {
-        return Err(Error::Http(format!(
-            "GET {url} returned {}",
-            reply.status()
-        )));
-    }
-    reply.bytes(32 * 1024 * 1024)
+    crate::fetch::get_ok_bytes(http, url, crate::fetch::MAX_BODY)
 }
 
 /// Per-vendor/arch summary lines plus totals, for the Action log.

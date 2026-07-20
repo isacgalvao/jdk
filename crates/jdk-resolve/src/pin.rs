@@ -6,6 +6,7 @@
 //! a declared but malformed java entry is an error, never silently skipped.
 
 use crate::selector::{Selector, normalize_vendor};
+use crate::text::meaningful_lines as lines;
 use crate::version::ParseError;
 
 pub type Parser = fn(&str) -> Result<Option<Selector>, ParseError>;
@@ -64,18 +65,6 @@ fn tool_versions(content: &str) -> Result<Option<Selector>, ParseError> {
         }
     }
     Ok(None)
-}
-
-/// Meaningful lines: BOM stripped, comments removed, trimmed, blanks skipped.
-fn lines(content: &str) -> impl Iterator<Item = &str> {
-    content
-        .trim_start_matches('\u{feff}')
-        .lines()
-        .map(|line| match line.find('#') {
-            Some(at) => line[..at].trim(),
-            None => line.trim(),
-        })
-        .filter(|line| !line.is_empty())
 }
 
 /// Value of the first `java=<value>` entry, tolerating spaces around `=`.

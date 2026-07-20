@@ -302,7 +302,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Lowercase hex sha256 of a file, streamed in 8 KiB chunks.
-pub fn sha256_file(path: &Path) -> Result<String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     hash_file_into(&mut hasher, path)?;
     Ok(hex(&hasher.finalize()))

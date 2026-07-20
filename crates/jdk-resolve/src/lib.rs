@@ -10,4 +10,5 @@ pub mod exit;
 pub mod pin;
 pub mod selector;
 pub mod store;
+mod text;
 pub mod version;

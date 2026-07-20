@@ -12,6 +12,7 @@
 //! `auto-install` (shim behavior for a pinned-but-missing JDK).
 
 use crate::selector::normalize_vendor;
+use crate::text::meaningful_lines;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -101,16 +102,7 @@ pub fn load(root: &Path) -> Result<Config, ConfigError> {
 
 pub fn parse(text: &str) -> Result<Config, ConfigError> {
     let mut config = Config::default();
-    let lines = text
-        .trim_start_matches('\u{feff}')
-        .lines()
-        .map(|line| match line.find('#') {
-            Some(at) => line[..at].trim(),
-            None => line.trim(),
-        })
-        .filter(|line| !line.is_empty());
-
-    for line in lines {
+    for line in meaningful_lines(text) {
         let Some((key, value)) = line.split_once('=') else {
             return Err(ConfigError::parse(line, "expected `key = \"value\"`"));
         };

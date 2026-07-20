@@ -9,7 +9,9 @@ pub use jdk_core::download::sha256_hex;
 #[cfg(windows)]
 pub mod reg;
 
-use jdk_core::index::{IndexEntry, IndexFile, Package, ReleaseStatus, current_platform};
+use jdk_core::index::{
+    IndexEntry, IndexFile, Package, ReleaseStatus, SCHEMA_VERSION, current_platform,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -273,7 +275,7 @@ pub fn package(version: &str, url: &str, sha256: &str, size: u64) -> Package {
 /// hand instead of serving one.
 pub fn index_json(files: Vec<IndexEntry>) -> Vec<u8> {
     let index = IndexFile {
-        version: 1,
+        version: SCHEMA_VERSION,
         updated: "2026-07-17T00:00:00Z".to_string(),
         files,
     };

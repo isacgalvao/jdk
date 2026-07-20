@@ -13,7 +13,7 @@ use jdk_core::catalog::DEFAULT_INDEX_URL;
 use jdk_core::current::{self, Current};
 use jdk_core::download::sha256_hex;
 use jdk_core::env::{self, JavaHomeState, RegKey};
-use jdk_core::http::{Http, Retry, UrlPolicy};
+use jdk_core::http::{Http, Retry};
 use jdk_core::index::{IndexFile, safe_path_segments};
 use jdk_core::{admin, shims};
 use jdk_resolve::config::Config;
@@ -430,11 +430,10 @@ fn pin(root: &Path, config: &Config) -> Check {
 /// never a failure — offline is not a disease; install/available say more.
 fn index_reachable() -> Check {
     let index_url = crate::remote::env_url("JDK_INDEX");
-    let policy = if index_url.is_some() || crate::remote::env_url("JDK_FOOJAY").is_some() {
-        UrlPolicy::AllowInsecureLoopback
-    } else {
-        UrlPolicy::Strict
-    };
+    let policy = crate::remote::url_policy(
+        index_url.as_deref(),
+        crate::remote::env_url("JDK_FOOJAY").as_deref(),
+    );
     let url = format!(
         "{}/index.json",
         index_url.as_deref().unwrap_or(DEFAULT_INDEX_URL)

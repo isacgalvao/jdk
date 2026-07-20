@@ -3,10 +3,10 @@
 //! open resolves the new JDK on its next `java` invocation. No auto-install
 //! in v0.1: a missing candidate is an actionable error, not a download.
 
-use crate::fail::Fail;
+use crate::fail::{self, Fail};
 use crate::uninstall;
 use jdk_core::current;
-use jdk_resolve::{exit, store};
+use jdk_resolve::store;
 use std::path::Path;
 
 pub fn run(root: &Path, selector: &str) -> Result<(), Fail> {
@@ -14,21 +14,10 @@ pub fn run(root: &Path, selector: &str) -> Result<(), Fail> {
     let selector = crate::parse_selector(selector)?;
     let config = crate::config(root)?;
 
-    let scan_fail = |err| Fail::new(exit::FAILURE, format!("cannot scan the store: {err}"));
-    let candidate = store::best_candidate(root, &selector, &config.vendor).map_err(scan_fail)?;
+    let candidate = store::best_candidate(root, &selector, &config.vendor).map_err(Fail::scan)?;
     let Some(candidate) = candidate else {
-        let installed = store::installed(root).map_err(scan_fail)?;
-        let mut message = format!("no installed JDK matches {selector}");
-        if !installed.is_empty() {
-            let names: Vec<String> = installed
-                .iter()
-                .map(|c| format!("{}@{}", c.vendor, c.version))
-                .collect();
-            message.push_str(&format!("\n  installed: {}", names.join(", ")));
-        }
-        return Err(Fail::new(exit::NOT_INSTALLED, message)
-            .hint(format!("jdk install {selector}"))
-            .hint("`jdk list` shows what is installed"));
+        let installed = store::installed(root).map_err(Fail::scan)?;
+        return Err(fail::not_installed(&selector, &installed, true));
     };
 
     current::retarget(root, &candidate.dir).map_err(Fail::engine)?;

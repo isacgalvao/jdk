@@ -9,6 +9,8 @@
 
 use jdk_core::Error;
 use jdk_resolve::exit;
+use jdk_resolve::selector::Selector;
+use jdk_resolve::store::Candidate;
 use std::fmt;
 
 #[derive(Debug)]
@@ -50,6 +52,32 @@ impl Fail {
             _ => fail,
         }
     }
+
+    /// Store-scan failures (`store::installed` / `store::best_candidate`): a
+    /// plain FAILURE with the I/O cause appended.
+    pub fn scan(err: impl fmt::Display) -> Fail {
+        Fail::new(exit::FAILURE, format!("cannot scan the store: {err}"))
+    }
+}
+
+/// The "no installed JDK matches {selector}" failure shared by `jdk use` and
+/// `jdk uninstall`: NOT_INSTALLED, the installed list appended when non-empty,
+/// and the `jdk list` hint. `offer_install` adds the `jdk install` hint that
+/// `use` shows and `uninstall` does not.
+pub fn not_installed(selector: &Selector, installed: &[Candidate], offer_install: bool) -> Fail {
+    let mut message = format!("no installed JDK matches {selector}");
+    if !installed.is_empty() {
+        let names: Vec<String> = installed
+            .iter()
+            .map(|c| format!("{}@{}", c.vendor, c.version))
+            .collect();
+        message.push_str(&format!("\n  installed: {}", names.join(", ")));
+    }
+    let mut fail = Fail::new(exit::NOT_INSTALLED, message);
+    if offer_install {
+        fail = fail.hint(format!("jdk install {selector}"));
+    }
+    fail.hint("`jdk list` shows what is installed")
 }
 
 impl fmt::Display for Fail {

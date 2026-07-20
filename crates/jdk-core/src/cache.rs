@@ -8,7 +8,7 @@
 
 use crate::error::{Error, Result};
 use crate::file_ops::atomic_rename;
-use crate::http::Http;
+use crate::http::{Http, MAX_BODY};
 use crate::index::safe_path_segments;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -17,8 +17,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const TTL: Duration = Duration::from_secs(24 * 60 * 60);
 pub const REFRESH_GRACE: Duration = Duration::from_secs(5 * 60);
-/// Upper bound for any single cached catalog file.
-const MAX_BODY: u64 = 32 * 1024 * 1024;
 
 pub struct Cache {
     dir: PathBuf,
