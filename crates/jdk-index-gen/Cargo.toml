@@ -19,8 +19,8 @@ serde_json = "1"
 # Streaming trust-on-first-use hashing (jdk-core only exposes whole-buffer
 # sha256_hex); sha1 cross-checks the digest foojay announces for vendors
 # that publish nothing stronger (liberica).
-sha1 = "0.10"
-sha2 = "0.10"
+sha1 = "0.11"
+sha2 = "0.11"
 
 [dev-dependencies]
 tempfile = "3"
