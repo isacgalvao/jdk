@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 # Firewall: only jdk-resolve (std-only) and the Win32 bindings. No network,
 # no async, no parsers beyond jdk-resolve.

@@ -9,12 +9,15 @@ members = [
     "crates/test-support",
 ]
 
+# publish is off by default so an internal crate never leaks to crates.io; the
+# three published crates (jdk, jdk-core, jdk-resolve) opt back in explicitly.
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0"
 repository = "https://github.com/isacgalvao/jdk"
+publish = false
 
 # Size-optimized profile for the shim, which is copied byte-identically once
 # per JDK tool — so every byte counts.

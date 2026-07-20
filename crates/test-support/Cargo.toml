@@ -1,11 +1,12 @@
 [package]
 name = "test-support"
 description = "Dev-only hermetic test support: loopback HTTP server, fake-JDK fixtures, workspace binary builders"
-publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 # Never part of the runtime graph: consumers list this crate under
 # [dev-dependencies] only. The jdk-core dependency (for the index contract

@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = true
 
 # Shim firewall: no runtime dependencies, std only. Anything heavier belongs in jdk-core.
 
