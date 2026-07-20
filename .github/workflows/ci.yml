@@ -13,6 +13,9 @@ jobs:
       # No toolchain action: rust-toolchain.toml pins the channel, components
       # (clippy, rustfmt) and target, and rustup auto-installs it on the first
       # cargo call below.
+      - name: version consistency
+        shell: pwsh
+        run: ./scripts/check-versions.ps1
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
@@ -23,3 +26,12 @@ jobs:
           $shim = Get-Item target/release-shim/jdk-shim.exe
           Write-Host "jdk-shim.exe: $($shim.Length) bytes"
           if ($shim.Length -ge 1MB) { throw "jdk-shim.exe is $($shim.Length) bytes, gate is < 1 MiB" }
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - uses: taiki-e/install-action@ed67fa35ac944f3a9b33f12c4dd43b6f31a47e20  # v2
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny check
