@@ -118,7 +118,7 @@ version (`21`, `21.0.5`), which uses the default vendor from your config
 | `jdk use <selector>` | Set the **global** default (retargets the `current` junction) |
 | `jdk pin <selector>` | Pin the current directory (writes `.jdkrc`) |
 | `jdk list` | List installed JDKs |
-| `jdk available [filter] [--latest]` | List JDKs you can install (filter by vendor, version, or both) |
+| `jdk available [filter] [--latest] [--ea]` | List JDKs you can install (filter by vendor, version, or both; `--ea` includes early-access builds) |
 | `jdk current` | Show which Java this directory resolves to, and why |
 | `jdk which [tool]` | Print the resolved path of a tool (`java` by default) — handy for IDE setup |
 | `jdk setup [--yes]` | One-time Windows prep: `JAVA_HOME`, `PATH`, shims (idempotent) |
