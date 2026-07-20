@@ -65,16 +65,34 @@ impl Version {
     }
 
     /// Direct satisfaction: the pattern's components are a leading slice of
-    /// ours, and any build or pre-release the pattern pins equals ours exactly.
+    /// ours, the pattern's build (if any) equals ours, and the pattern's
+    /// pre-release (if any) accepts ours — see [`pre_accepts`].
     fn matches_directly(&self, pattern: &Version) -> bool {
         if !self.components.starts_with(&pattern.components) {
             return false;
         }
         let build_ok = pattern.build.is_none() || pattern.build == self.build;
-        let pre_release_ok =
-            pattern.pre_release.is_none() || pattern.pre_release == self.pre_release;
+        let pre_release_ok = match &pattern.pre_release {
+            None => true,
+            Some(pattern) => self
+                .pre_release
+                .as_deref()
+                .is_some_and(|candidate| pre_accepts(pattern, candidate)),
+        };
         build_ok && pre_release_ok
     }
+}
+
+/// Whether a pre-release `pattern` accepts a candidate pre-release: they are
+/// equal, or the candidate continues the pattern at a component boundary —
+/// `ea` accepts the nightly `ea+31` and `ea.1`, but not `early`. This is what
+/// lets a stable EA-line selector (`27-ea`) match the daily build the index
+/// carries (`27-ea+31`) without the user chasing the build number.
+fn pre_accepts(pattern: &str, candidate: &str) -> bool {
+    candidate == pattern
+        || candidate
+            .strip_prefix(pattern)
+            .is_some_and(|rest| rest.starts_with(['+', '.', '-']))
 }
 
 impl FromStr for Version {
@@ -273,6 +291,19 @@ mod tests {
         assert!(ea.matches(&v("21.0.5-ea")));
         assert!(!ea.matches(&v("21.0.5-beta")));
         assert!(!v("21.0.5").matches(&v("21.0.5-ea")));
+    }
+
+    #[test]
+    fn matches_pre_release_at_a_boundary() {
+        // A bare EA-line selector accepts the daily build the index carries:
+        // `ea` continues into `ea+31` at the `+` boundary.
+        assert!(v("27-ea+31").matches(&v("27-ea")));
+        assert!(v("26.2-preview.1+5").matches(&v("26.2-preview.1")));
+        assert!(v("27-ea+31").matches(&v("27-ea+31")));
+        // A shared textual prefix without a boundary is not a match, and a
+        // pinned build still requires that exact build.
+        assert!(!v("27-early").matches(&v("27-ea")));
+        assert!(!v("27-ea+31").matches(&v("27-ea+30")));
     }
 
     #[test]
