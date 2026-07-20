@@ -326,7 +326,9 @@ fn hash_file_into(hasher: &mut Sha256, path: &Path) -> Result<u64> {
     }
 }
 
-fn hex(digest: &[u8]) -> String {
+/// Lowercase hex of a digest. Shared with jdk-index-gen, which hex-encodes
+/// its streaming sha1/sha256 finalize output the same way.
+pub fn hex(digest: &[u8]) -> String {
     let mut out = String::with_capacity(digest.len() * 2);
     for byte in digest {
         write!(out, "{byte:02x}").expect("writing to a String cannot fail");
