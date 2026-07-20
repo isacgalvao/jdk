@@ -747,7 +747,7 @@ fn tofu_cross_checks_the_announced_sha1() {
     let server = Server::start();
     let mut archive = vec![b'P', b'K', 3, 4];
     archive.extend(std::iter::repeat_n(0xCDu8, 1536 * 1024));
-    let real_sha1 = format!("{:x}", sha1::Sha1::digest(&archive));
+    let real_sha1 = jdk_core::download::hex(&sha1::Sha1::digest(&archive));
     let expected_sha256 = test_support::sha256_hex(&archive);
     server.route("/archives/liberica.zip", {
         let archive = archive.clone();

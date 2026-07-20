@@ -390,14 +390,14 @@ fn tofu_sha256(http: &Http, url: &str, announced_sha1: Option<&str>) -> Result<S
         )));
     }
     if let (Some(sha1), Some(announced)) = (sha1, announced_sha1) {
-        let streamed = format!("{:x}", sha1.finalize());
+        let streamed = jdk_core::download::hex(&sha1.finalize());
         if streamed != announced {
             return Err(Error::Security(format!(
                 "TOFU hash: {url} sha1 mismatch: foojay announced {announced}, the stream hashed to {streamed} — CDN tamper or stale catalog data; refusing to publish"
             )));
         }
     }
-    Ok(format!("{:x}", sha256.finalize()))
+    Ok(jdk_core::download::hex(&sha256.finalize()))
 }
 
 fn fetch_json<T: serde::de::DeserializeOwned>(http: &Http, url: &str) -> Result<T> {
