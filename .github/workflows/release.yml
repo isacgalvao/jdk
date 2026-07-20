@@ -39,7 +39,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       # rust-toolchain.toml pins the toolchain and lists the aarch64 target;
       # rustup auto-installs both on the first cargo call.
@@ -47,7 +47,7 @@ jobs:
       # cargo-auditable embeds the dependency SBOM in jdk.exe; cargo-audit
       # fails the build on a known-vulnerable dependency.
       - name: install cargo-auditable and cargo-audit
-        uses: taiki-e/install-action@ed67fa35ac944f3a9b33f12c4dd43b6f31a47e20  # v2
+        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9  # v2
         with:
           tool: cargo-auditable,cargo-audit
 
@@ -232,7 +232,7 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: windows-2025
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       # rust-toolchain.toml pins the toolchain; rustup auto-installs it on the
       # first cargo call.
