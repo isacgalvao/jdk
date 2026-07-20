@@ -1,8 +1,8 @@
-//! `jdk available [filter] [--latest]`: what the catalog can install for
-//! this platform, newest first, LTS/EA flagged. The filter is a vendor
-//! (`temurin`), a version pattern (`21`) or both (`temurin@21`). Without a
-//! vendor the listing needs the index — the live foojay fallback cannot
-//! enumerate distributions.
+//! `jdk available [filter] [--latest] [--ea]`: what the catalog can install
+//! for this platform, newest first, LTS/EA flagged. The filter is a vendor
+//! (`temurin`), a version pattern (`21`) or both (`temurin@21`). Early-access
+//! builds are hidden unless `--ea`. Without a vendor the listing needs the
+//! index — the live foojay fallback cannot enumerate distributions.
 
 use crate::fail::Fail;
 use crate::remote;
@@ -13,7 +13,7 @@ use jdk_resolve::selector::normalize_vendor;
 use jdk_resolve::version::Version;
 use std::path::Path;
 
-pub fn run(root: &Path, filter: Option<&str>, latest: bool) -> Result<(), Fail> {
+pub fn run(root: &Path, filter: Option<&str>, latest: bool, ea: bool) -> Result<(), Fail> {
     let filter = Filter::parse(filter)?;
     let (http, catalog) = remote::client(root)?;
     let (os, arch) = current_platform();
@@ -33,7 +33,7 @@ pub fn run(root: &Path, filter: Option<&str>, latest: bool) -> Result<(), Fail> 
     let mut first_failure: Option<Fail> = None;
     let mut failed = 0usize;
     for vendor in &vendors {
-        let listing = match catalog.available(&http, vendor, os, arch) {
+        let listing = match catalog.available(&http, vendor, os, arch, ea) {
             Ok(listing) => listing,
             Err(err) => {
                 eprintln!("jdk: warning: skipping {vendor}: {}", one_line(&err));

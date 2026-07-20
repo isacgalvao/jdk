@@ -42,17 +42,25 @@ struct Details {
     checksum_type: String,
 }
 
-/// Display listing for `vendor` — version/LTS/EA only, GA-only by query
-/// design. The listing endpoint carries no checksum, so nothing returned
-/// here can be downloaded; resolution for install stays in [`find`].
+/// Display listing for `vendor` — version/LTS/EA only. `include_ea` widens to
+/// early-access, capped to each line's latest (as the index is) so the
+/// listing does not drown in nightlies. The listing endpoint carries no
+/// checksum, so nothing returned here can be downloaded; resolution for
+/// install stays in [`find`].
 pub fn available(
     http: &Http,
     base_url: &str,
     vendor: &str,
     os: &str,
     arch: &str,
+    include_ea: bool,
 ) -> Result<Vec<Available>> {
-    let url = packages_url(base_url, vendor, os, arch, "ga", None);
+    let (status, latest) = if include_ea {
+        ("ea,ga", Some("available"))
+    } else {
+        ("ga", None)
+    };
+    let url = packages_url(base_url, vendor, os, arch, status, latest);
     let listing: Envelope<Listing> = fetch_json(http, &url)?;
     Ok(listing
         .result

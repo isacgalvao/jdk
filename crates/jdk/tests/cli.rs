@@ -256,16 +256,21 @@ fn available_lists_flags_filters_and_trims_to_latest() {
     let output = world.jdk(&["available"]);
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     let listing = stdout(&output);
-    let line_with = |needle: &str| {
+    let line_with = |listing: &str, needle: &str| {
         listing
             .lines()
             .find(|line| line.contains(needle))
             .unwrap_or_else(|| panic!("no line with {needle} in:\n{listing}"))
             .to_string()
     };
-    assert!(line_with("temurin@21.0.5").contains("LTS"));
-    assert!(line_with("temurin@24-ea").contains("EA"));
-    assert!(!line_with("temurin@23.0.1").contains("LTS"));
+    assert!(line_with(&listing, "temurin@21.0.5").contains("LTS"));
+    assert!(!line_with(&listing, "temurin@23.0.1").contains("LTS"));
+    // Early-access is hidden unless --ea is asked for.
+    assert!(!listing.contains("24-ea"), "EA hidden by default:\n{listing}");
+
+    let output = world.jdk(&["available", "--ea"]);
+    let listing = stdout(&output);
+    assert!(line_with(&listing, "temurin@24-ea").contains("EA"));
 
     let output = world.jdk(&["available", "temurin@21"]);
     let listing = stdout(&output);

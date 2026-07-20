@@ -167,6 +167,7 @@ impl Catalog {
         vendor: &str,
         os: &str,
         arch: &str,
+        include_ea: bool,
     ) -> Result<Vec<Available>> {
         let from_index = self
             .vendor_packages(http, vendor, os, arch)
@@ -174,6 +175,7 @@ impl Catalog {
                 packages
                     .into_iter()
                     .filter(|p| p.tool == "java" && p.os == os && p.arch == arch)
+                    .filter(|p| include_ea || p.release_status != ReleaseStatus::Ea)
                     .map(|p| Available {
                         vendor: p.vendor,
                         version: p.version,
@@ -184,13 +186,15 @@ impl Catalog {
             });
         match from_index {
             Ok(list) if !list.is_empty() => Ok(list),
-            Ok(_) => foojay::available(http, &self.foojay_url, vendor, os, arch),
-            Err(index_err) => match foojay::available(http, &self.foojay_url, vendor, os, arch) {
-                Ok(list) => Ok(list),
-                Err(foojay_err) => Err(Error::Catalog(format!(
-                    "no catalog listing for {vendor}\n  index: {index_err}\n  foojay fallback: {foojay_err}"
-                ))),
-            },
+            Ok(_) => foojay::available(http, &self.foojay_url, vendor, os, arch, include_ea),
+            Err(index_err) => {
+                match foojay::available(http, &self.foojay_url, vendor, os, arch, include_ea) {
+                    Ok(list) => Ok(list),
+                    Err(foojay_err) => Err(Error::Catalog(format!(
+                        "no catalog listing for {vendor}\n  index: {index_err}\n  foojay fallback: {foojay_err}"
+                    ))),
+                }
+            }
         }
     }
 

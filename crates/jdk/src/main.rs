@@ -59,6 +59,9 @@ enum Command {
         /// Only the best version of each major line
         #[arg(long)]
         latest: bool,
+        /// Include early-access (preview) builds
+        #[arg(long)]
+        ea: bool,
     },
     /// Pin a Java version for this directory (writes .jdkrc)
     Pin {
@@ -109,7 +112,11 @@ fn run(cli: Cli) -> Result<(), Fail> {
         } => install::run(&root, &selector, from_shim),
         Command::Uninstall { selector } => uninstall::run(&root, &selector),
         Command::List => list::run(&root),
-        Command::Available { filter, latest } => available::run(&root, filter.as_deref(), latest),
+        Command::Available {
+            filter,
+            latest,
+            ea,
+        } => available::run(&root, filter.as_deref(), latest, ea),
         Command::Pin { selector } => pin::run(&root, &selector),
         Command::Current => current::run(&root),
         Command::Which { tool } => which::run(&root, tool.as_deref()),

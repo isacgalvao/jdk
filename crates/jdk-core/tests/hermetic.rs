@@ -1056,7 +1056,9 @@ fn available_falls_back_to_foojay_when_the_index_lists_nothing_for_the_platform(
     });
 
     let catalog = Catalog::with_urls(temp.path(), server.url(), server.url());
-    let list = catalog.available(&http(), "temurin", os, arch).unwrap();
+    let list = catalog
+        .available(&http(), "temurin", os, arch, false)
+        .unwrap();
 
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].version, "21.0.5+11");
