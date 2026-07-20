@@ -35,9 +35,8 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
 
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
-        with:
-          targets: aarch64-pc-windows-msvc
+      # rust-toolchain.toml pins the toolchain and lists the aarch64 target;
+      # rustup auto-installs both on the first cargo call.
 
       # cargo-auditable embeds the dependency SBOM in jdk.exe; cargo-audit
       # fails the build on a known-vulnerable dependency.
@@ -194,7 +193,8 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
 
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+      # rust-toolchain.toml pins the toolchain; rustup auto-installs it on the
+      # first cargo call.
 
       - name: publish to crates.io (jdk-resolve -> jdk-core -> jdk)
         shell: bash
