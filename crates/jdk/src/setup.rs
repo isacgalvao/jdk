@@ -440,4 +440,26 @@ mod tests {
         let decided = decide_replace(false, || panic!("read_answer must not be called off-TTY"));
         assert!(!decided);
     }
+
+    /// The sort key `(pre_release.is_none(), version, vendor)`: stable outranks
+    /// a higher-versioned EA, and the vendor is the final tiebreak between two
+    /// otherwise-equal stables.
+    #[test]
+    fn eligible_global_prefers_stable_over_higher_ea_then_vendor_breaks_the_tie() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let candidates = store::java_candidates(root);
+        for name in ["zulu@22.0.0-ea", "temurin@21.0.5", "zulu@21.0.5"] {
+            fs::create_dir_all(candidates.join(name)).unwrap();
+        }
+
+        let best = eligible_global(root).unwrap().unwrap();
+
+        assert_eq!(best.vendor, "zulu", "vendor breaks the 21.0.5 stable tie");
+        assert_eq!(
+            best.version.to_string(),
+            "21.0.5",
+            "the 21.0.5 stable beats the EA at 22"
+        );
+    }
 }
