@@ -1,11 +1,12 @@
 [package]
 name = "jdk-index-gen"
 description = "Generator of the jdk-index catalog: foojay Disco API to a static index with sha256/LTS/EA"
-publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 # Reuses jdk-core's index types and HTTP client, so the generator produces the
 # contract the client consumes by construction.
