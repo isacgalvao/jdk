@@ -1,0 +1,33 @@
+# Supply-chain policy enforced by `cargo deny check` in CI. Licenses are an
+# allowlist of what has been vetted; a dependency under any other license fails
+# the check until it is reviewed and added here. Only the crates.io registry is
+# trusted, and a crate with a known advisory or a yanked release fails too.
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Every current dependency resolves against these. The AND expressions decide
+# the list: `ring` is `Apache-2.0 AND ISC` (needs ISC) and `unicode-ident` is
+# `(MIT OR Apache-2.0) AND Unicode-3.0` (needs Unicode-3.0). `subtle`
+# (BSD-3-Clause) and `webpki-roots` (CDLA-Permissive-2.0) stand alone.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "ISC",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+# A duplicated dependency is a smell, not a failure: warn so it stays visible
+# without blocking a release on a transitive version skew we do not control.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

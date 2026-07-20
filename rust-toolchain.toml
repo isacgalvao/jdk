@@ -1,0 +1,8 @@
+# Pinned toolchain so local dev and CI resolve the exact same rustc — this is
+# the build toolchain, not the MSRV (the minimum supported version lives in
+# `rust-version`, Cargo.toml). aarch64 is listed because the release builds it
+# best-effort. Bump in a dedicated commit so the change is reviewable.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt"]
+targets = ["aarch64-pc-windows-msvc"]
