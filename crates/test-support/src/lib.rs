@@ -253,6 +253,20 @@ pub fn fake_jdk_zip(java_exe: &[u8]) -> Vec<u8> {
     cursor.into_inner()
 }
 
+/// Zip shaped like a release bundle: `jdk.exe` and `jdk-shim.exe` side by
+/// side at the archive root, the way release.yml packages them.
+pub fn release_zip(jdk_exe: &[u8], shim_exe: &[u8]) -> Vec<u8> {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(&mut cursor);
+    let options = zip::write::SimpleFileOptions::default();
+    writer.start_file("jdk.exe", options).unwrap();
+    writer.write_all(jdk_exe).unwrap();
+    writer.start_file("jdk-shim.exe", options).unwrap();
+    writer.write_all(shim_exe).unwrap();
+    writer.finish().unwrap();
+    cursor.into_inner()
+}
+
 /// A GA/LTS temurin java package for the current platform. Tests tweak the
 /// fields they care about afterwards.
 pub fn package(version: &str, url: &str, sha256: &str, size: u64) -> Package {

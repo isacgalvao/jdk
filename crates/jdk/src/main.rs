@@ -1,6 +1,7 @@
 //! `jdk` CLI: install/uninstall/list/available/pin/current/which (M3) plus
 //! the Windows pillar (M4) — `setup` (persistent JAVA_HOME/PATH/shims),
-//! `use` (atomic junction retarget) and `doctor` (named health checks).
+//! `use` (atomic junction retarget), `doctor` (named health checks) — and
+//! `update` (self-update from this project's GitHub releases).
 //!
 //! Output contract: stdout carries data, stderr carries messages, prompts and
 //! progress. Errors state what failed, what to do about it, and context —
@@ -17,6 +18,7 @@ mod remote;
 mod resolve;
 mod setup;
 mod uninstall;
+mod update;
 mod r#use;
 mod which;
 
@@ -91,6 +93,12 @@ enum Command {
     },
     /// Check the store, junction, registry and PATH; explain every problem
     Doctor,
+    /// Update jdk itself to the latest release
+    Update {
+        /// Reinstall even when already on the latest release
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() {
@@ -121,6 +129,7 @@ fn run(cli: Cli) -> Result<(), Fail> {
         Command::Use { selector } => r#use::run(&root, &selector),
         Command::Setup { yes, shim_source } => setup::run(&root, yes, shim_source.as_deref()),
         Command::Doctor => doctor::run(&root),
+        Command::Update { force } => update::run(&root, force),
     }
 }
 
