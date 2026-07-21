@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
 
@@ -18,11 +19,12 @@ impl std::error::Error for ParseError {}
 /// `21.0.4+7`, Corretto `21.0.7.6.1`, legacy `1.8.0_392` (the underscore reads
 /// as one more component separator).
 ///
-/// The derived ordering compares components lexicographically, then build
-/// (absent sorts lowest), then pre-release. A pre-release therefore sorts
-/// after its release; [`crate::store::best_candidate`]
+/// Ordering compares components lexicographically, then build (absent sorts
+/// lowest), then pre-release — where the trailing build number is read as a
+/// number, so `ea+8` sorts below `ea+31` (see [`natural_cmp`]). A pre-release
+/// therefore sorts after its release; [`crate::store::best_candidate`]
 /// corrects for it by ranking stable above pre-release.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Version {
     pub components: Vec<u32>,
     pub build: Option<Vec<u32>>,
@@ -93,6 +95,90 @@ fn pre_accepts(pattern: &str, candidate: &str) -> bool {
         || candidate
             .strip_prefix(pattern)
             .is_some_and(|rest| rest.starts_with(['+', '.', '-']))
+}
+
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.components
+            .cmp(&other.components)
+            .then_with(|| self.build.cmp(&other.build))
+            .then_with(|| cmp_pre_release(&self.pre_release, &other.pre_release))
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// A stable (`None`) sorts before a pre-release of the same release; two
+/// pre-releases compare naturally so the trailing EA build number reads as a
+/// number.
+fn cmp_pre_release(a: &Option<String>, b: &Option<String>) -> Ordering {
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (Some(a), Some(b)) => natural_cmp(a, b),
+    }
+}
+
+/// Human ("natural") ordering: maximal digit runs compare by numeric value,
+/// everything else byte by byte — so `ea+8` < `ea+31` rather than lexically
+/// `"ea+3…" < "ea+8"`. A final raw-byte tiebreak (reached only by
+/// leading-zero-different runs) keeps the order consistent with `Eq`.
+fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (mut x, mut y) = (a.as_bytes(), b.as_bytes());
+    loop {
+        match (x.first(), y.first()) {
+            (None, None) => break,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(dx), Some(dy)) if dx.is_ascii_digit() && dy.is_ascii_digit() => {
+                let (run_x, rest_x) = split_digits(x);
+                let (run_y, rest_y) = split_digits(y);
+                match cmp_numeric(run_x, run_y) {
+                    Ordering::Equal => {
+                        x = rest_x;
+                        y = rest_y;
+                    }
+                    other => return other,
+                }
+            }
+            (Some(cx), Some(cy)) => match cx.cmp(cy) {
+                Ordering::Equal => {
+                    x = &x[1..];
+                    y = &y[1..];
+                }
+                other => return other,
+            },
+        }
+    }
+    a.as_bytes().cmp(b.as_bytes())
+}
+
+/// Splits off the leading run of ASCII digits.
+fn split_digits(s: &[u8]) -> (&[u8], &[u8]) {
+    let end = s
+        .iter()
+        .position(|c| !c.is_ascii_digit())
+        .unwrap_or(s.len());
+    s.split_at(end)
+}
+
+/// Compares two digit runs as numbers without parsing (overflow-proof): after
+/// dropping leading zeros, the longer run is the larger number, then compare
+/// digit by digit.
+fn cmp_numeric(a: &[u8], b: &[u8]) -> Ordering {
+    let a = strip_leading_zeros(a);
+    let b = strip_leading_zeros(b);
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+}
+
+fn strip_leading_zeros(s: &[u8]) -> &[u8] {
+    let start = s.iter().position(|&c| c != b'0').unwrap_or(s.len());
+    &s[start..]
 }
 
 impl FromStr for Version {
@@ -314,5 +400,23 @@ mod tests {
         assert!(v("21.0.7.5.9") < v("21.0.7.6.1"));
         assert!(v("21.0.5") < v("21.0.5+1"));
         assert!(v("21.0.5+9") < v("21.0.5+10"));
+    }
+
+    #[test]
+    fn orders_pre_release_build_numerically() {
+        // The daily EA build suffix reads as a number: +8 < +31 < +131, not
+        // the lexical "+131" < "+31" < "+8". This is what makes `pick_best`
+        // pick the newest EA build of a line, not the alphabetically-largest.
+        assert!(v("27-ea+8") < v("27-ea+31"));
+        assert!(v("27-ea+31") < v("27-ea+131"));
+        assert!(v("26.2-preview.1+2") < v("26.2-preview.1+10"));
+        // Same build with a leading zero is a distinct string but the same
+        // number — given a total order, never treated as equal (the direction
+        // of the leading-zero tiebreak is arbitrary; Ord/Eq stay consistent).
+        assert_ne!(v("27-ea+08"), v("27-ea+8"));
+        assert_ne!(v("27-ea+08").cmp(&v("27-ea+8")), Ordering::Equal);
+        // A pre-release still sorts after its stable release.
+        assert!(v("27") < v("27-ea+31"));
+        assert!(v("27-ea+31") < v("27.0.1"));
     }
 }
