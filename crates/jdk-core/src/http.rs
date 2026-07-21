@@ -334,6 +334,11 @@ impl Reply {
         self.response.status().as_u16()
     }
 
+    /// The final URL after redirects — the hop that produced this response.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
     pub fn header(&self, name: &str) -> Option<&str> {
         self.response
             .headers()

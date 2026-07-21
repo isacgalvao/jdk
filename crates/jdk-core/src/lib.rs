@@ -6,7 +6,9 @@
 //!   corporate CAs, HTTPS-only on every hop);
 //! - materialization: [`download`] (resumable, sha256-mandatory),
 //!   [`extract`] (hardened zip), [`layout`] (find the JDK root),
-//!   [`install`] (locked, idempotent).
+//!   [`install`] (locked, idempotent);
+//! - self-update source: [`release`] (latest-version discovery and verified
+//!   bundle fetch from this project's own GitHub releases).
 
 #[cfg(windows)]
 pub mod admin;
@@ -26,6 +28,7 @@ pub mod http;
 pub mod index;
 pub mod install;
 pub mod layout;
+pub mod release;
 #[cfg(windows)]
 pub mod shims;
 

@@ -11,7 +11,9 @@ use jdk_core::download::{MAX_ARCHIVE, fetch_archive, fetch_archive_capped, sha25
 use jdk_core::http::{Http, Retry, UrlPolicy};
 use jdk_core::index::{IndexEntry, IndexFile, current_platform};
 use jdk_core::install::install;
+use jdk_core::release;
 use jdk_resolve::store;
+use jdk_resolve::version::Version;
 use std::fs;
 use std::io::Write as _;
 use std::process::Command;
@@ -1095,4 +1097,150 @@ fn index_reachable_but_no_matching_version_falls_through_to_foojay_with_a_combin
         1,
         "the index miss must still fall through to a foojay lookup"
     );
+}
+
+// --- self-update release source (jdk_core::release) ----------------------
+
+#[test]
+fn reply_url_reports_the_post_redirect_hop() {
+    let server = Server::start();
+    let target = format!("{}/final", server.url());
+    server.route("/hop", move |_| Response::redirect(&target));
+    server.route("/final", |_| Response::ok("done"));
+
+    let reply = http()
+        .get(&format!("{}/hop", server.url()), "test", &[])
+        .unwrap();
+
+    assert_eq!(reply.url(), format!("{}/final", server.url()));
+}
+
+#[test]
+fn latest_reads_the_version_from_the_releases_redirect() {
+    let server = Server::start();
+    let target = format!("{}/tag/v9.9.9", server.url());
+    server.route("/latest", move |_| Response::redirect(&target));
+    server.route("/tag/v9.9.9", |_| Response::ok("release page html"));
+
+    let version = release::latest(&http(), server.url()).unwrap();
+
+    assert_eq!(version.to_string(), "9.9.9");
+}
+
+#[test]
+fn latest_refuses_a_redirect_that_lands_off_a_tag() {
+    let server = Server::start();
+    let target = format!("{}/somewhere-else", server.url());
+    server.route("/latest", move |_| Response::redirect(&target));
+    server.route("/somewhere-else", |_| Response::ok(""));
+
+    let err = release::latest(&http(), server.url()).unwrap_err();
+
+    assert!(err.to_string().contains("install.ps1"), "{err}");
+}
+
+/// The release-bundle routes for `version` on `server`: the zip under the
+/// GitHub asset path plus its `.sha256` sidecar carrying `hash`.
+fn serve_bundle(server: &Server, version: &str, payload: Vec<u8>, hash: &str) -> String {
+    let asset = format!("jdk-v{version}-windows-{}.zip", release::ARCH);
+    let route = format!("/download/v{version}/{asset}");
+    let sidecar = format!("{hash}  {asset}\n");
+    server.route(&route, move |_| Response::ok(payload.clone()));
+    server.route(&format!("{route}.sha256"), move |_| {
+        Response::ok(sidecar.clone())
+    });
+    route
+}
+
+#[test]
+fn fetch_bundle_downloads_and_verifies_the_release_zip() {
+    let server = Server::start();
+    let payload = b"release zip bytes".to_vec();
+    serve_bundle(&server, "9.9.9", payload.clone(), &sha256_hex(&payload));
+    let temp = TempDir::new().unwrap();
+    let version: Version = "9.9.9".parse().unwrap();
+
+    let mut events = Vec::new();
+    let mut on_progress = |done: u64, total: u64| events.push((done, total));
+    let dest = release::fetch_bundle(
+        &http(),
+        server.url(),
+        &version,
+        temp.path(),
+        Some(&mut on_progress),
+    )
+    .unwrap();
+
+    assert_eq!(fs::read(&dest).unwrap(), payload);
+    assert_eq!(
+        dest.file_name().unwrap().to_str().unwrap(),
+        format!("jdk-v9.9.9-windows-{}.zip", release::ARCH)
+    );
+    let total = payload.len() as u64;
+    assert_eq!(*events.last().unwrap(), (total, total));
+    // The streaming staging never survives a finished fetch.
+    let leftovers: Vec<_> = fs::read_dir(temp.path())
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path() != dest)
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn a_corrupt_bundle_sha256_blocks_and_leaves_nothing_behind() {
+    let server = Server::start();
+    let payload = b"tampered zip bytes".to_vec();
+    // The sidecar promises the hash of DIFFERENT bytes.
+    serve_bundle(
+        &server,
+        "9.9.9",
+        payload,
+        &sha256_hex(b"what the sidecar promised"),
+    );
+    let temp = TempDir::new().unwrap();
+    let version: Version = "9.9.9".parse().unwrap();
+
+    let err =
+        release::fetch_bundle(&http(), server.url(), &version, temp.path(), None).unwrap_err();
+
+    assert!(matches!(err, Error::Checksum { .. }), "{err}");
+    let leftovers: Vec<_> = fs::read_dir(temp.path()).unwrap().flatten().collect();
+    assert!(leftovers.is_empty(), "nothing written: {leftovers:?}");
+}
+
+#[test]
+fn a_missing_sidecar_refuses_before_touching_the_zip() {
+    let server = Server::start();
+    let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
+    let route = format!("/download/v9.9.9/{asset}");
+    server.route(&route, |_| Response::ok("zip bytes"));
+    // No `.sha256` route: the sidecar GET answers 404.
+    let temp = TempDir::new().unwrap();
+    let version: Version = "9.9.9".parse().unwrap();
+
+    let err =
+        release::fetch_bundle(&http(), server.url(), &version, temp.path(), None).unwrap_err();
+
+    assert!(err.to_string().contains("sidecar"), "{err}");
+    assert_eq!(server.hits(&route), 0, "the zip must never be fetched");
+}
+
+#[test]
+fn a_missing_release_asset_names_the_arm64_best_effort_case() {
+    let server = Server::start();
+    let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
+    let sidecar = format!("{}  {asset}\n", "a".repeat(64));
+    // Sidecar present, zip absent — the shape of a release whose arm64
+    // build was skipped.
+    server.route(&format!("/download/v9.9.9/{asset}.sha256"), move |_| {
+        Response::ok(sidecar.clone())
+    });
+    let temp = TempDir::new().unwrap();
+    let version: Version = "9.9.9".parse().unwrap();
+
+    let err =
+        release::fetch_bundle(&http(), server.url(), &version, temp.path(), None).unwrap_err();
+
+    assert!(err.to_string().contains("arm64"), "{err}");
 }
