@@ -123,6 +123,7 @@ version (`21`, `21.0.5`), which uses the default vendor from your config
 | `jdk which [tool]` | Print the resolved path of a tool (`java` by default) — handy for IDE setup |
 | `jdk setup [--yes]` | One-time Windows prep: `JAVA_HOME`, `PATH`, shims (idempotent) |
 | `jdk doctor` | Health-check the store, junction, registry and `PATH`; explain every problem |
+| `jdk update [--force]` | Update jdk itself to the latest release (checksum-verified; `--force` reinstalls the current one) |
 
 ## How a version is chosen
 
@@ -191,7 +192,9 @@ Both keys are optional; the values above are the defaults.
 
 Run `jdk doctor`. It checks the store layout, the `current` junction, the
 registry `JAVA_HOME` and that `PATH` contains the shims and `bin` directories
-exactly once, and it names each problem together with how to fix it.
+exactly once, and it names each problem together with how to fix it. It also
+notes when a newer jdk release is available and points at `jdk update` —
+informative only, never a failure.
 
 ## Roadmap
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `jdk update`: self-update to the latest GitHub release — checksum-verified download, in-process swap of the running `jdk.exe` (the old copy is moved aside and swept on the next run) and shim refresh; `--force` reinstalls the current version.
+- `jdk doctor` now notes when a newer jdk release is available and points at `jdk update`; like the other network probes, being offline is informative and never a failure.
+
 ## [0.3.0] - 2026-07-21
 
 ### Added
