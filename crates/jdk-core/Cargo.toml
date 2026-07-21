@@ -9,7 +9,7 @@ repository.workspace = true
 publish = true
 
 [dependencies]
-jdk-resolve = { path = "../jdk-resolve", version = "0.2.0" }
+jdk-resolve = { path = "../jdk-resolve", version = "0.3.0" }
 # Sync HTTP over rustls, proxy from env; redirects are followed manually so the
 # HTTPS-only policy and vendor headers apply to every hop.
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
