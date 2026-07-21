@@ -194,13 +194,9 @@ fn a_corrupt_release_hash_blocks_before_touching_the_store() {
 fn a_missing_release_asset_reports_the_arm64_best_effort_case() {
     let server = Server::start();
     serve_latest(&server, "9.9.9");
-    // Sidecar present, zip absent — the shape of a release without a build
-    // for this architecture.
-    let sidecar = format!("{}  {}\n", "a".repeat(64), asset("9.9.9"));
-    server.route(
-        &format!("/download/v9.9.9/{}.sha256", asset("9.9.9")),
-        move |_| Response::ok(sidecar.clone()),
-    );
+    // Neither the zip nor its sidecar is routed — the real shape of a
+    // release without a build for this architecture (release.yml only
+    // writes sidecars for assets it packaged).
     let world = World::new(server.url().to_string());
     let exe = world.place_store_copy();
 

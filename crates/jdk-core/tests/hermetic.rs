@@ -1210,12 +1210,12 @@ fn a_corrupt_bundle_sha256_blocks_and_leaves_nothing_behind() {
 }
 
 #[test]
-fn a_missing_sidecar_refuses_before_touching_the_zip() {
+fn a_missing_sidecar_discards_the_downloaded_zip_as_unverifiable() {
     let server = Server::start();
     let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
     let route = format!("/download/v9.9.9/{asset}");
     server.route(&route, |_| Response::ok("zip bytes"));
-    // No `.sha256` route: the sidecar GET answers 404.
+    // No `.sha256` route: the asset exists but cannot be verified.
     let temp = TempDir::new().unwrap();
     let version: Version = "9.9.9".parse().unwrap();
 
@@ -1223,19 +1223,20 @@ fn a_missing_sidecar_refuses_before_touching_the_zip() {
         release::fetch_bundle(&http(), server.url(), &version, temp.path(), None).unwrap_err();
 
     assert!(err.to_string().contains("sidecar"), "{err}");
-    assert_eq!(server.hits(&route), 0, "the zip must never be fetched");
+    assert_eq!(server.hits(&route), 1, "the zip download itself succeeded");
+    let leftovers: Vec<_> = fs::read_dir(temp.path()).unwrap().flatten().collect();
+    assert!(
+        leftovers.is_empty(),
+        "the unverifiable zip is discarded: {leftovers:?}"
+    );
 }
 
 #[test]
 fn a_missing_release_asset_names_the_arm64_best_effort_case() {
     let server = Server::start();
-    let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
-    let sidecar = format!("{}  {asset}\n", "a".repeat(64));
-    // Sidecar present, zip absent — the shape of a release whose arm64
-    // build was skipped.
-    server.route(&format!("/download/v9.9.9/{asset}.sha256"), move |_| {
-        Response::ok(sidecar.clone())
-    });
+    // NEITHER the zip nor the sidecar is routed — the real shape of a
+    // release without a build for this architecture, since release.yml only
+    // writes sidecars for assets it packaged.
     let temp = TempDir::new().unwrap();
     let version: Version = "9.9.9".parse().unwrap();
 
@@ -1243,4 +1244,10 @@ fn a_missing_release_asset_names_the_arm64_best_effort_case() {
         release::fetch_bundle(&http(), server.url(), &version, temp.path(), None).unwrap_err();
 
     assert!(err.to_string().contains("arm64"), "{err}");
+    let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
+    assert_eq!(
+        server.hits(&format!("/download/v9.9.9/{asset}.sha256")),
+        0,
+        "the zip's 404 settles it before any sidecar GET"
+    );
 }

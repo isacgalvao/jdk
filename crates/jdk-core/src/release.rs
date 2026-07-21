@@ -81,8 +81,9 @@ fn tag_version(url: &str) -> Option<Version> {
 
 /// Downloads the `version` release zip for [`ARCH`] into `dest_dir`,
 /// verified against its `.sha256` sidecar, and returns the zip path. The
-/// bytes are hashed as they stream and staged next to the destination; a
-/// mismatch removes the staging and leaves nothing behind.
+/// bytes are hashed as they stream and staged next to the destination; the
+/// sidecar is read after the download, and a mismatch — or a sidecar that
+/// cannot be read — removes the staging and leaves nothing behind.
 pub fn fetch_bundle(
     http: &Http,
     base: &str,
@@ -92,7 +93,6 @@ pub fn fetch_bundle(
 ) -> Result<PathBuf> {
     let asset = format!("jdk-v{version}-windows-{ARCH}.zip");
     let url = format!("{base}/download/v{version}/{asset}");
-    let expected = sidecar_sha256(http, &url, version, &asset)?;
     fs::create_dir_all(dest_dir).map_err(Error::io("create", dest_dir))?;
 
     let reply = http.get_streaming(&url, "update", &[])?;
@@ -159,6 +159,17 @@ pub fn fetch_bundle(
     file.flush().map_err(Error::io("flush", &part))?;
     drop(file);
 
+    // The sidecar comes AFTER the zip on purpose: release.yml only writes a
+    // sidecar for an asset it packaged, so a release without this ARCH
+    // 404s on both — and must surface as the zip's arm64 hint above, never
+    // as a sidecar complaint.
+    let expected = match sidecar_sha256(http, &url, version, &asset) {
+        Ok(expected) => expected,
+        Err(err) => {
+            let _ = fs::remove_file(&part);
+            return Err(err);
+        }
+    };
     let actual = hex(&hasher.finalize());
     if actual != expected {
         let _ = fs::remove_file(&part);
