@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
 use test_support::reg::TestKey;
-use test_support::{dead_url, index_json, sha256_hex, shim_binaries};
+use test_support::{Response, Server, dead_url, index_json, sha256_hex, shim_binaries};
 
 const JDK: &str = env!("CARGO_BIN_EXE_jdk");
 
@@ -30,6 +30,10 @@ struct World {
     machine: TestKey,
     shim_source: PathBuf,
     fake_java: PathBuf,
+    /// `JDK_RELEASES` for the spawned binary: a dead port by default (the
+    /// doctor's release probe must stay hermetic); tests point it at a
+    /// loopback release server.
+    releases: String,
 }
 
 impl World {
@@ -50,6 +54,7 @@ impl World {
             machine: TestKey::create(),
             shim_source,
             fake_java,
+            releases: dead_url(),
         }
     }
 
@@ -62,6 +67,7 @@ impl World {
             .env("JDK_MACHINE_ENV_KEY", self.machine.path())
             .env("JDK_INDEX", dead_url())
             .env("JDK_FOOJAY", dead_url())
+            .env("JDK_RELEASES", &self.releases)
             .output()
             .unwrap()
     }
@@ -427,8 +433,54 @@ fn doctor_reports_all_clear_in_a_healthy_sandbox() {
             "expected ✓ on {name} in a healthy sandbox: {line}"
         );
     }
-    // Offline is NOT a disease: the dead index is a note, never a failure.
+    // Offline is NOT a disease: the dead index and the dead release source
+    // are notes, never failures.
     assert!(doctor_line(&report, "index").starts_with('!'), "{report}");
+    let update = doctor_line(&report, "update");
+    assert!(update.starts_with('!'), "{report}");
+    assert!(update.contains("unreachable"), "{update}");
+}
+
+/// A loopback release source whose `/latest` redirect lands on `version`.
+fn release_server(version: &str) -> Server {
+    let server = Server::start();
+    let target = format!("{}/tag/v{version}", server.url());
+    server.route("/latest", move |_| Response::redirect(&target));
+    server.route(&format!("/tag/v{version}"), |_| {
+        Response::ok("release page html")
+    });
+    server
+}
+
+#[test]
+fn doctor_notes_a_newer_release_without_failing() {
+    let mut world = healthy();
+    let server = release_server("99.0.0");
+    world.releases = server.url().to_string();
+
+    let output = world.jdk(&["doctor"]);
+
+    assert_ok(&output);
+    let report = stdout(&output);
+    let line = doctor_line(&report, "update");
+    assert!(line.starts_with('!'), "informative, not broken: {line}");
+    assert!(line.contains("jdk update"), "{line}");
+    assert!(line.contains("99.0.0"), "{line}");
+}
+
+#[test]
+fn doctor_passes_the_update_check_on_the_latest_release() {
+    let mut world = healthy();
+    let server = release_server(env!("CARGO_PKG_VERSION"));
+    world.releases = server.url().to_string();
+
+    let output = world.jdk(&["doctor"]);
+
+    assert_ok(&output);
+    let report = stdout(&output);
+    let line = doctor_line(&report, "update");
+    assert!(line.starts_with('✓'), "{line}");
+    assert!(line.contains("latest release"), "{line}");
 }
 
 #[test]

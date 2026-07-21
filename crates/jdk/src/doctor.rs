@@ -15,8 +15,9 @@ use jdk_core::download::sha256_hex;
 use jdk_core::env::{self, JavaHomeState, RegKey};
 use jdk_core::http::{Http, Retry};
 use jdk_core::index::{IndexFile, safe_path_segments};
-use jdk_core::{admin, shims};
+use jdk_core::{admin, release, shims};
 use jdk_resolve::config::Config;
+use jdk_resolve::version::Version;
 use jdk_resolve::{exit, store};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,7 @@ pub fn run(root: &Path) -> Result<(), Fail> {
     checks.extend(path_checks(&user, root));
     checks.push(pin(root, &config));
     checks.push(index_reachable());
+    checks.push(update_available());
     checks.push(cache_integrity(root));
     checks.push(cli_copy(root));
     checks.push(elevation());
@@ -450,6 +452,33 @@ fn index_reachable() -> Check {
         Err(err) => note(
             "index",
             format!("unreachable ({err}) — fine offline; install/available need it"),
+        ),
+    }
+}
+
+/// Same probe profile as [`index_reachable`], against the release source. A
+/// newer release is a note pointing at `jdk update`, and unreachable is a
+/// note too — this check NEVER breaks, so it never touches the exit code.
+fn update_available() -> Check {
+    let local: Version = env!("CARGO_PKG_VERSION")
+        .parse()
+        .expect("the crate version parses");
+    let (base, policy) = release::base_url();
+    let quick = Retry {
+        attempts: 1,
+        base_delay: Duration::ZERO,
+    };
+    let remote = Http::with_request_timeout(policy, quick, Duration::from_secs(3))
+        .and_then(|http| release::latest(&http, &base));
+    match remote {
+        Ok(remote) if remote > local => note(
+            "update",
+            format!("jdk {remote} is available (running {local}) — run `jdk update`"),
+        ),
+        Ok(_) => pass("update", format!("jdk {local} is the latest release")),
+        Err(err) => note(
+            "update",
+            format!("release check unreachable ({err}) — fine offline"),
         ),
     }
 }
