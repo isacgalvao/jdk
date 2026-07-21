@@ -266,7 +266,10 @@ fn available_lists_flags_filters_and_trims_to_latest() {
     assert!(line_with(&listing, "temurin@21.0.5").contains("LTS"));
     assert!(!line_with(&listing, "temurin@23.0.1").contains("LTS"));
     // Early-access is hidden unless --ea is asked for.
-    assert!(!listing.contains("24-ea"), "EA hidden by default:\n{listing}");
+    assert!(
+        !listing.contains("24-ea"),
+        "EA hidden by default:\n{listing}"
+    );
 
     let output = world.jdk(&["available", "--ea"]);
     let listing = stdout(&output);

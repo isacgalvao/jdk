@@ -204,7 +204,10 @@ mod tests {
     fn a_pre_release_query_widens_to_ea() {
         let url = packages_url(DEFAULT_URL, "temurin", "windows", "x64", "ea,ga", None);
         assert!(url.contains("release_status=ea,ga"), "{url}");
-        assert!(!url.contains("latest="), "the live fallback never caps: {url}");
+        assert!(
+            !url.contains("latest="),
+            "the live fallback never caps: {url}"
+        );
     }
 
     #[test]

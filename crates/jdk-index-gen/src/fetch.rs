@@ -410,7 +410,10 @@ fn tofu_sha256(http: &Http, url: &str, announced_sha1: Option<&str>) -> Result<S
 pub(crate) fn get_ok_bytes(http: &Http, url: &str, cap: u64) -> Result<Vec<u8>> {
     let reply = http.get(url, "jdk-index-gen", &[])?;
     if reply.status() != 200 {
-        return Err(Error::Http(format!("GET {url} returned {}", reply.status())));
+        return Err(Error::Http(format!(
+            "GET {url} returned {}",
+            reply.status()
+        )));
     }
     reply.bytes(cap)
 }
@@ -485,7 +488,13 @@ mod tests {
 
     #[test]
     fn ga_query_is_full_history_no_latest_cap() {
-        let url = packages_url("https://api.foojay.io/disco/v3.0", "temurin", "x64", "ga", None);
+        let url = packages_url(
+            "https://api.foojay.io/disco/v3.0",
+            "temurin",
+            "x64",
+            "ga",
+            None,
+        );
         assert_eq!(
             url,
             "https://api.foojay.io/disco/v3.0/packages?operating_system=windows&architecture=amd64,x64&archive_type=zip&lib_c_type=c_std_lib&package_type=jdk&release_status=ga&javafx_bundled=false&distribution=temurin"
