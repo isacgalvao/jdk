@@ -1,6 +1,7 @@
-//! Windows-safe file primitives shared by download finalization, the cache
-//! and (from M4 on) the `current` junction swap.
+//! Windows-safe file primitives shared by download finalization, the cache,
+//! the `current` junction swap and the shim/CLI executable swaps.
 
+use crate::error::{Error, Result};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -58,6 +59,30 @@ fn wide_nul(path: &Path) -> Vec<u16> {
 #[cfg(not(windows))]
 pub fn atomic_rename(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)
+}
+
+/// Swaps `staging` into `dest`, tolerating a `dest` that is EXECUTING. The
+/// Win32 semantics that shape this: a RUNNING exe cannot be deleted or
+/// replaced (the implicit delete inside `MOVEFILE_REPLACE_EXISTING` fails
+/// with ACCESS_DENIED while the image is mapped), but RENAMING it to another
+/// name is allowed. So on that refusal the live exe is moved aside to
+/// `<name>.exe.old` and the staging lands on the freed name; the `.old`
+/// stays behind until the caller's sweep catches it once the process has
+/// exited.
+pub fn replace_running(staging: &Path, dest: &Path) -> Result<()> {
+    match atomic_rename(staging, dest) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied && dest.exists() => {
+            let aside = dest.with_extension("exe.old");
+            // A leftover `.old` still running blocks the rename below; the
+            // resulting error is the honest answer for that corner.
+            let _ = fs::remove_file(&aside);
+            fs::rename(dest, &aside)
+                .map_err(Error::io("move the running executable aside from", dest))?;
+            atomic_rename(staging, dest).map_err(Error::io("place", dest))
+        }
+        Err(err) => Err(Error::io("place", dest)(err)),
+    }
 }
 
 #[cfg(test)]

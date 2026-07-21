@@ -4,7 +4,7 @@
 //! (anti-model 3), and cmd.exe/IDEs see real `.exe` files.
 
 use crate::error::{Error, Result};
-use crate::file_ops::atomic_rename;
+use crate::file_ops;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -119,27 +119,12 @@ pub fn materialize(source: &Path, shims_dir: &Path) -> Result<Vec<&'static str>>
     Ok(written)
 }
 
-/// Swaps `staging` into `dest`. The Win32 semantics that shape this: a
-/// RUNNING exe cannot be deleted or replaced (the implicit delete inside
-/// `MOVEFILE_REPLACE_EXISTING` fails with ACCESS_DENIED while the image is
-/// mapped), but RENAMING it to another name is allowed. So on that refusal
-/// the live exe is moved aside to `{tool}.exe.old` and the staging lands on
-/// the freed name; the `.old` stays until [`sweep_aside`] catches it once
+/// Swaps `staging` into `dest`: a shim EXECUTING right now is moved aside to
+/// `{tool}.exe.old` — see [`file_ops::replace_running`] for the Win32
+/// semantics — and the `.old` stays until [`sweep_aside`] catches it once
 /// the process has exited.
 fn place(staging: &Path, dest: &Path) -> Result<()> {
-    match atomic_rename(staging, dest) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::PermissionDenied && dest.exists() => {
-            let aside = dest.with_extension("exe.old");
-            // A leftover `.old` still running blocks the rename below; the
-            // resulting error is the honest answer for that corner.
-            let _ = fs::remove_file(&aside);
-            fs::rename(dest, &aside)
-                .map_err(Error::io("move the running shim aside from", dest))?;
-            atomic_rename(staging, dest).map_err(Error::io("place shim at", dest))
-        }
-        Err(err) => Err(Error::io("place shim at", dest)(err)),
-    }
+    file_ops::replace_running(staging, dest)
 }
 
 /// Clears `{tool}.exe.old` leftovers of earlier while-running replacements.
