@@ -69,6 +69,12 @@ pub fn atomic_rename(from: &Path, to: &Path) -> io::Result<()> {
 /// `<name>.exe.old` and the staging lands on the freed name; the `.old`
 /// stays behind until the caller's sweep catches it once the process has
 /// exited.
+///
+/// Should the final rename fail AFTER the aside emptied `dest`, the aside is
+/// rolled back onto `dest` (best-effort — the original error is reported
+/// either way), so the destination never silently vanishes. That failure has
+/// no deterministic simulation without fault injection, so the rollback is
+/// documented here rather than pinned by a test.
 pub fn replace_running(staging: &Path, dest: &Path) -> Result<()> {
     match atomic_rename(staging, dest) {
         Ok(()) => Ok(()),
@@ -79,7 +85,10 @@ pub fn replace_running(staging: &Path, dest: &Path) -> Result<()> {
             let _ = fs::remove_file(&aside);
             fs::rename(dest, &aside)
                 .map_err(Error::io("move the running executable aside from", dest))?;
-            atomic_rename(staging, dest).map_err(Error::io("place", dest))
+            atomic_rename(staging, dest).map_err(|err| {
+                let _ = fs::rename(&aside, dest);
+                Error::io("place", dest)(err)
+            })
         }
         Err(err) => Err(Error::io("place", dest)(err)),
     }
