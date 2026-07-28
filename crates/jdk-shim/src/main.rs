@@ -3,6 +3,7 @@ use jdk_resolve::config::{self, AutoInstall, Config};
 use jdk_resolve::store::Candidate;
 use jdk_resolve::{exit, store};
 use std::env;
+use std::fs;
 use std::io::{self, ErrorKind, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -205,8 +206,9 @@ fn accepts(answer: &str) -> bool {
 
 fn install_via_cli(root: &Path, pin: &Pin, vendor: &str) -> Result<Candidate, i32> {
     let packaged = root.join("bin").join("jdk.exe");
-    // Decision 7 layout first; otherwise let CreateProcess search the PATH.
-    let jdk_exe = if packaged.exists() {
+    // Decision 7 layout first, then a crash-interrupted update's leftovers,
+    // and only then let CreateProcess search the PATH.
+    let jdk_exe = if packaged.exists() || restore_aside(&packaged) {
         packaged.clone()
     } else {
         PathBuf::from("jdk")
@@ -247,6 +249,26 @@ fn install_via_cli(root: &Path, pin: &Pin, vendor: &str) -> Result<Candidate, i3
     }
 }
 
+/// Puts `bin\jdk.exe` back from the `.old` an interrupted self-update left
+/// behind, reporting whether the CLI is there afterwards. `jdk update` renames
+/// the running exe aside before the replacement lands, so a death in that
+/// window leaves the machine with no jdk.exe at all — and the shims, which the
+/// swap never touches, are the only thing still able to repair it. Deliberately
+/// reached ONLY after the exe has been looked for and not found: the resolution
+/// hot path must not pay a syscall for a window that virtually never opens.
+fn restore_aside(dest: &Path) -> bool {
+    let aside = dest.with_extension("exe.old");
+    if fs::rename(&aside, dest).is_err() {
+        return false;
+    }
+    eprintln!(
+        "jdk-shim: restored {} from {} — a previous `jdk update` was interrupted",
+        dest.display(),
+        aside.display()
+    );
+    true
+}
+
 fn not_installed(pin: &Pin) -> i32 {
     eprintln!(
         "jdk-shim: {} (pinned by {}) is not installed",
@@ -277,8 +299,10 @@ fn fail(message: &str, code: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{InstallDecision, accepts, decide_install, keep_waiting};
+    use super::{InstallDecision, accepts, decide_install, keep_waiting, restore_aside};
     use jdk_resolve::config::AutoInstall;
+    use std::fs;
+    use tempfile::TempDir;
     use windows_sys::Win32::Foundation::{FALSE, TRUE};
     use windows_sys::Win32::System::Console::{
         CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
@@ -291,6 +315,38 @@ mod tests {
         for other in [CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT] {
             assert_eq!(unsafe { keep_waiting(other) }, FALSE, "ctrl_type {other}");
         }
+    }
+
+    /// BUG-04: the state a process death between the aside and the
+    /// replacement leaves behind — `bin` holding only `jdk.exe.old`.
+    #[test]
+    fn restore_aside_puts_the_cli_back_after_an_interrupted_update() {
+        let temp = TempDir::new().unwrap();
+        let bin = temp.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("jdk.exe.old"), b"the only copy left").unwrap();
+
+        assert!(restore_aside(&bin.join("jdk.exe")));
+
+        assert_eq!(
+            fs::read(bin.join("jdk.exe")).unwrap(),
+            b"the only copy left"
+        );
+        assert!(
+            !bin.join("jdk.exe.old").exists(),
+            "the aside moved, so the next sweep has nothing to spare"
+        );
+    }
+
+    /// The overwhelmingly common miss: no store copy and no aside either, so
+    /// the caller falls through to the PATH lookup.
+    #[test]
+    fn restore_aside_reports_nothing_to_restore() {
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("bin").join("jdk.exe");
+
+        assert!(!restore_aside(&dest));
+        assert!(!dest.exists());
     }
 
     #[test]

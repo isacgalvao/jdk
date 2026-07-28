@@ -56,8 +56,8 @@ fn apply(
         .hint("jdk setup --yes replaces it (the old value is saved to config.toml)"));
     }
 
-    materialize_shims(root, shim_source)?;
-    place_cli(root);
+    let shim = materialize_shims(root, shim_source)?;
+    place_cli(root, &shim);
 
     let java_home_changed = write_java_home(root, config, key, &junction, state)?;
     // bin before shims so the final PATH reads `shims;bin;…` — the shims
@@ -90,8 +90,9 @@ fn apply(
 }
 
 /// Copies `jdk-shim.exe` (next to the running jdk.exe, or `--shim-source`)
-/// over the v0.1 tool set.
-fn materialize_shims(root: &Path, shim_source: Option<&Path>) -> Result<(), Fail> {
+/// over the v0.1 tool set, and returns the source it used so the same bytes
+/// can be parked in `bin` for the next run.
+fn materialize_shims(root: &Path, shim_source: Option<&Path>) -> Result<PathBuf, Fail> {
     let source = match shim_source {
         Some(path) => path.to_path_buf(),
         None => sibling("jdk-shim.exe")?,
@@ -113,7 +114,7 @@ fn materialize_shims(root: &Path, shim_source: Option<&Path>) -> Result<(), Fail
     } else {
         eprintln!("jdk: materialized shims: {}", written.join(", "));
     }
-    Ok(())
+    Ok(source)
 }
 
 fn sibling(name: &str) -> Result<PathBuf, Fail> {
@@ -126,40 +127,45 @@ fn sibling(name: &str) -> Result<PathBuf, Fail> {
     Ok(me.with_file_name(name))
 }
 
-/// Copies the running jdk.exe to `<root>\bin\jdk.exe` (decision 7 layout —
-/// where the shim's auto-install looks for it). Best-effort: a locked or
-/// unreadable copy is a warning, and doctor reports the skew.
-fn place_cli(root: &Path) {
-    let Ok(me) = std::env::current_exe() else {
-        return;
-    };
-    let dest = root.join("bin").join("jdk.exe");
-    if let (Ok(a), Ok(b)) = (fs::canonicalize(&me), fs::canonicalize(&dest))
-        && a == b
-    {
-        eprintln!("jdk: running from the store copy ({})", dest.display());
-        return;
+/// Fills `<root>\bin\` with the pair the installed layout needs (decision 7):
+/// jdk.exe, where the shim's auto-install looks for it, and the jdk-shim.exe
+/// the shims were just materialized from. The shim has to travel with it
+/// because `materialize_shims` resolves it as a sibling of the running exe —
+/// without a copy in `bin`, `jdk setup` run from the store (the remedy doctor
+/// recommends everywhere) would find nothing to materialize from.
+fn place_cli(root: &Path, shim: &Path) {
+    let bin = root.join("bin");
+    if let Ok(me) = std::env::current_exe() {
+        place_beside(&me, &bin.join("jdk.exe"));
     }
-    let payload = match fs::read(&me) {
+    place_beside(shim, &bin.join("jdk-shim.exe"));
+}
+
+/// One copy into `bin`, staged and swapped in so a reader never sees a partial
+/// file. Best-effort: a locked or unreadable copy is a warning, and doctor
+/// reports the skew. A source that already IS the destination — setup re-run
+/// from the store copy — compares equal and is left alone.
+fn place_beside(source: &Path, dest: &Path) {
+    let payload = match fs::read(source) {
         Ok(payload) => payload,
         Err(err) => {
             eprintln!(
                 "jdk: warning: cannot read {} to copy it: {err}",
-                me.display()
+                source.display()
             );
             return;
         }
     };
-    if fs::read(&dest).is_ok_and(|existing| existing == payload) {
+    if fs::read(dest).is_ok_and(|existing| existing == payload) {
         eprintln!("jdk: {} already up to date", dest.display());
         return;
     }
     let staged = dest.with_extension("exe.new");
     let placed = fs::create_dir_all(dest.parent().expect("bin dir has a parent"))
         .and_then(|()| fs::write(&staged, &payload))
-        .and_then(|()| jdk_core::file_ops::atomic_rename(&staged, &dest));
+        .and_then(|()| jdk_core::file_ops::atomic_rename(&staged, dest));
     match placed {
-        Ok(()) => eprintln!("jdk: copied jdk.exe to {}", dest.display()),
+        Ok(()) => eprintln!("jdk: copied {} to {}", source.display(), dest.display()),
         Err(err) => {
             let _ = fs::remove_file(&staged);
             eprintln!("jdk: warning: cannot place {}: {err}", dest.display());

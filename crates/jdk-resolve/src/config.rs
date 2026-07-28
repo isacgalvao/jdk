@@ -3,16 +3,20 @@
 //! Deliberately NOT a TOML library (this crate is the shim's std-only
 //! firewall). The file is a flat SUBSET of TOML that the CLI — its only
 //! writer (`jdk-core::config`) — guarantees: `key = "string"` or
-//! `key = true|false` lines, `#` comments, blank lines. No tables, arrays,
-//! escapes or multi-line values. The reader tolerates a UTF-8 BOM and CRLF,
-//! ignores unknown keys (a newer jdk may know more), and rejects anything
-//! outside the subset with an error naming the line.
+//! `key = true|false` lines, `#` comments outside quotes, blank lines. No
+//! tables, arrays, escapes or multi-line values. The reader tolerates a UTF-8
+//! BOM and CRLF, ignores unknown keys (a newer jdk may know more), and rejects
+//! anything outside the subset with an error naming the line.
+//!
+//! `entries` is the whole format's only lexer: `parse` here reads the two keys
+//! the shim cares about, and `jdk-core::config` reads the JAVA_HOME backup
+//! keys through the same iterator. One file, one notion of what it says.
 //!
 //! v0.1 keys: `vendor` (default vendor for versions without one) and
 //! `auto-install` (shim behavior for a pinned-but-missing JDK).
 
 use crate::selector::normalize_vendor;
-use crate::text::meaningful_lines;
+use crate::text::config_lines;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -78,6 +82,43 @@ impl ConfigError {
     }
 }
 
+/// One `key = value` line of the subset, already checked to be inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Entry<'a> {
+    pub key: &'a str,
+    pub value: Value<'a>,
+    /// The comment-stripped line, kept so a caller rejecting a value it does
+    /// not recognize reports it exactly like the lexer does.
+    line: &'a str,
+}
+
+/// A value of the subset. The two shapes stay apart so a key that wants a
+/// string can refuse `auto-install = true` instead of reading `"true"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Value<'a> {
+    /// Inner text of a `"quoted string"`, never containing a quote. May be
+    /// empty: whether that is meaningful belongs to the key (a vendor cannot
+    /// be empty, a backed-up JAVA_HOME can).
+    Str(&'a str),
+    Bool(bool),
+}
+
+impl<'a> Entry<'a> {
+    /// The value as a string, or a parse error naming the line.
+    pub fn string(&self) -> Result<&'a str, ConfigError> {
+        match self.value {
+            Value::Str(text) => Ok(text),
+            Value::Bool(_) => Err(self.invalid("value must be a \"quoted string\"")),
+        }
+    }
+
+    /// Rejects this line for a reason only the key's owner knows (an unknown
+    /// enum value, an empty vendor).
+    pub fn invalid(&self, reason: impl Into<String>) -> ConfigError {
+        ConfigError::parse(self.line, reason)
+    }
+}
+
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -102,59 +143,73 @@ pub fn load(root: &Path) -> Result<Config, ConfigError> {
 
 pub fn parse(text: &str) -> Result<Config, ConfigError> {
     let mut config = Config::default();
-    for line in meaningful_lines(text) {
-        let Some((key, value)) = line.split_once('=') else {
-            return Err(ConfigError::parse(line, "expected `key = \"value\"`"));
-        };
-        match key.trim() {
-            "vendor" => config.vendor = normalize_vendor(quoted(line, value)?),
+    for entry in entries(text) {
+        let entry = entry?;
+        match entry.key {
+            "vendor" => {
+                let vendor = entry.string()?;
+                if vendor.is_empty() {
+                    return Err(entry.invalid("vendor must not be empty"));
+                }
+                config.vendor = normalize_vendor(vendor);
+            }
             "auto-install" => {
-                config.auto_install = match quoted(line, value)? {
+                config.auto_install = match entry.string()? {
                     "always" => AutoInstall::Always,
                     "prompt" => AutoInstall::Prompt,
                     "never" => AutoInstall::Never,
                     other => {
-                        return Err(ConfigError::parse(
-                            line,
-                            format!("unknown auto-install value `{other}` (always|prompt|never)"),
-                        ));
+                        return Err(entry.invalid(format!(
+                            "unknown auto-install value `{other}` (always|prompt|never)"
+                        )));
                     }
                 };
             }
             // Unknown keys are ignored: a config written by a newer jdk must
-            // not break an older shim.
-            _ => {
-                if !is_subset_value(value.trim()) {
-                    return Err(ConfigError::parse(
-                        line,
-                        "value must be a \"quoted string\" or true|false",
-                    ));
-                }
-            }
+            // not break an older shim. `entries` still held the line to the
+            // subset, so a malformed one is an error whatever its key.
+            _ => {}
         }
     }
     Ok(config)
 }
 
-/// The value of a known string key, unquoted; anything else is an error.
-fn quoted<'a>(line: &str, value: &'a str) -> Result<&'a str, ConfigError> {
-    let value = value.trim();
+/// Every `key = value` entry, in file order, each already inside the subset.
+/// This is the single lexer both readers of the file share — the shim's
+/// `parse` above and the CLI's JAVA_HOME-backup reader in `jdk-core::config`.
+/// Two hand-rolled readers of one format drift: the CLI's used to truncate at
+/// any `#` and unquote with `trim_matches`, so a path holding a `#` came back
+/// silently cut on that side and a hard parse error on this one.
+pub fn entries(text: &str) -> impl Iterator<Item = Result<Entry<'_>, ConfigError>> {
+    config_lines(text).map(entry)
+}
+
+fn entry(line: &str) -> Result<Entry<'_>, ConfigError> {
+    let Some((key, value)) = line.split_once('=') else {
+        return Err(ConfigError::parse(line, "expected `key = \"value\"`"));
+    };
+    let value = match value.trim() {
+        "true" => Value::Bool(true),
+        "false" => Value::Bool(false),
+        quoted => Value::Str(unquote(quoted).ok_or_else(|| {
+            ConfigError::parse(line, "value must be a \"quoted string\" or true|false")
+        })?),
+    };
+    Ok(Entry {
+        key: key.trim(),
+        value,
+        line,
+    })
+}
+
+/// Inner text of a `"quoted string"`; `None` for anything else. Nothing is
+/// unescaped — the writer emits no escapes, so a value is whatever sits
+/// between the outer quotes, `#` and backslashes included.
+fn unquote(value: &str) -> Option<&str> {
     value
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
-        .filter(|inner| !inner.is_empty() && !inner.contains('"'))
-        .ok_or_else(|| ConfigError::parse(line, "value must be a \"quoted string\""))
-}
-
-/// Whether an ignored value still fits the written subset (quoted string or
-/// bare boolean) — a malformed line is an error even on an unknown key.
-fn is_subset_value(value: &str) -> bool {
-    value == "true"
-        || value == "false"
-        || (value.len() >= 2
-            && value.starts_with('"')
-            && value.ends_with('"')
-            && !value[1..value.len() - 1].contains('"'))
+        .filter(|inner| !inner.contains('"'))
 }
 
 #[cfg(test)]
@@ -217,6 +272,30 @@ mod tests {
     fn ignores_unknown_keys_inside_the_subset() {
         let config = parse("future-key = \"x\"\nflag = true\nvendor = \"zulu\"\n").unwrap();
         assert_eq!(config.vendor, "zulu");
+    }
+
+    #[test]
+    fn a_hash_inside_quotes_is_data_not_a_comment() {
+        // The regression: one `#` in the backed-up JAVA_HOME used to truncate
+        // the line, drop the closing quote and fail the file for the shim.
+        let text = "java-home-before = \"C:\\Tools\\jdk#17\"\nvendor = \"zulu\"\n";
+        assert_eq!(parse(text).unwrap().vendor, "zulu");
+
+        let values: Vec<Value<'_>> = entries(text).map(|e| e.unwrap().value).collect();
+        assert_eq!(values[0], Value::Str("C:\\Tools\\jdk#17"));
+    }
+
+    #[test]
+    fn entries_report_key_value_and_type() {
+        let text = "vendor = \"zulu\"  # team default\nflag = false\nempty = \"\"\n";
+        let found: Vec<Entry<'_>> = entries(text).map(Result::unwrap).collect();
+        assert_eq!(found[0].key, "vendor");
+        assert_eq!(found[0].string().unwrap(), "zulu");
+        assert_eq!(found[1].value, Value::Bool(false));
+        assert!(found[1].string().is_err(), "a boolean is not a string");
+        // An empty string is inside the subset; only the key decides whether
+        // it means anything (`vendor = ""` is rejected below).
+        assert_eq!(found[2].string().unwrap(), "");
     }
 
     #[test]

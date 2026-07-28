@@ -6,26 +6,20 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-/// Rename that atomically replaces an existing destination FILE. On Windows
-/// `fs::rename` fails with `AlreadyExists` when the target exists; the
-/// fallback is `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`. Directories
-/// cannot be replaced this way — callers renaming directories must guarantee
-/// the target does not exist.
-#[cfg(windows)]
+/// Rename that atomically replaces an existing destination FILE: `fs::rename`
+/// asks Windows for `MOVEFILE_REPLACE_EXISTING`, so an occupied target is
+/// overwritten rather than refused. Directories cannot be replaced this way —
+/// callers renaming directories must guarantee the target does not exist.
 pub fn atomic_rename(from: &Path, to: &Path) -> io::Result<()> {
-    // A plain rename settles the move whenever `to` is free. Windows reports an
-    // occupied destination as `AlreadyExists`, and only that case is handed to
-    // the replacing move below; every other outcome goes back to the caller.
-    match fs::rename(from, to) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => replace_existing(from, to),
-        Err(err) => Err(err),
-    }
+    fs::rename(from, to)
 }
 
 /// Overwrites an existing `to` with `from` in one durable step:
 /// `MOVEFILE_REPLACE_EXISTING` supplants the occupant and `MOVEFILE_WRITE_THROUGH`
 /// holds the call until the change is flushed, so a crash cannot tear the swap.
+/// That flush is the only thing [`atomic_rename`] does not already give, which
+/// is why only [`replace_running`] — the executable swap, where a torn result
+/// leaves nothing to run — pays for the direct Win32 call.
 #[cfg(windows)]
 fn replace_existing(from: &Path, to: &Path) -> io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{
@@ -56,8 +50,11 @@ fn wide_nul(path: &Path) -> Vec<u16> {
     units
 }
 
+/// Off Windows there is no write-through flag to ask for, so the durable
+/// replacement degrades to the plain rename. Exists so [`replace_running`]
+/// stays one code path across the unit tests that run on both.
 #[cfg(not(windows))]
-pub fn atomic_rename(from: &Path, to: &Path) -> io::Result<()> {
+fn replace_existing(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)
 }
 
@@ -68,7 +65,8 @@ pub fn atomic_rename(from: &Path, to: &Path) -> io::Result<()> {
 /// name is allowed. So on that refusal the live exe is moved aside to
 /// `<name>.exe.old` and the staging lands on the freed name; the `.old`
 /// stays behind until the caller's sweep catches it once the process has
-/// exited.
+/// exited — and, while `dest` is still missing, is the only copy the machine
+/// has left, which is why a sweep must spare it (`jdk-shim` restores from it).
 ///
 /// Should the final rename fail AFTER the aside emptied `dest`, the aside is
 /// rolled back onto `dest` (best-effort — the original error is reported
@@ -76,7 +74,7 @@ pub fn atomic_rename(from: &Path, to: &Path) -> io::Result<()> {
 /// no deterministic simulation without fault injection, so the rollback is
 /// documented here rather than pinned by a test.
 pub fn replace_running(staging: &Path, dest: &Path) -> Result<()> {
-    match atomic_rename(staging, dest) {
+    match replace_existing(staging, dest) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::PermissionDenied && dest.exists() => {
             let aside = dest.with_extension("exe.old");
@@ -85,7 +83,7 @@ pub fn replace_running(staging: &Path, dest: &Path) -> Result<()> {
             let _ = fs::remove_file(&aside);
             fs::rename(dest, &aside)
                 .map_err(Error::io("move the running executable aside from", dest))?;
-            atomic_rename(staging, dest).map_err(|err| {
+            replace_existing(staging, dest).map_err(|err| {
                 let _ = fs::rename(&aside, dest);
                 Error::io("place", dest)(err)
             })
@@ -124,5 +122,22 @@ mod tests {
 
         assert!(!from.exists());
         assert_eq!(fs::read(&to).unwrap(), b"new");
+    }
+
+    /// The durable path taken when nothing holds `dest`: no aside is produced,
+    /// so a sweep has nothing to reason about.
+    #[test]
+    fn replace_running_overwrites_a_destination_nobody_is_executing() {
+        let temp = TempDir::new().unwrap();
+        let staging = temp.path().join("jdk.exe.new");
+        let dest = temp.path().join("jdk.exe");
+        fs::write(&staging, b"v2").unwrap();
+        fs::write(&dest, b"v1").unwrap();
+
+        replace_running(&staging, &dest).unwrap();
+
+        assert_eq!(fs::read(&dest).unwrap(), b"v2");
+        assert!(!staging.exists());
+        assert!(!temp.path().join("jdk.exe.old").exists());
     }
 }

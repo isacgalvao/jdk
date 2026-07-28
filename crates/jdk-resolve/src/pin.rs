@@ -1,12 +1,14 @@
 //! Parsers for the four pin-file formats.
 //!
 //! Every parser tolerates a UTF-8 BOM, CRLF and stray spaces; `#` starts a
-//! comment anywhere (no legitimate pin value contains it). `Ok(None)` means the
-//! file declares nothing about java (e.g. a `.jdkrc` with only other tools);
-//! a declared but malformed java entry is an error, never silently skipped.
+//! comment anywhere, since these formats do not quote and no legitimate pin
+//! value contains a `#` (`config.toml` does quote, and reads through the
+//! quote-aware scanner instead). `Ok(None)` means the file declares nothing
+//! about java (e.g. a `.jdkrc` with only other tools); a declared but
+//! malformed java entry is an error, never silently skipped.
 
 use crate::selector::{Selector, normalize_vendor};
-use crate::text::meaningful_lines as lines;
+use crate::text::pin_lines as lines;
 use crate::version::ParseError;
 
 pub type Parser = fn(&str) -> Result<Option<Selector>, ParseError>;

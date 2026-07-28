@@ -7,15 +7,23 @@
 //! `java-home-before-kind`, the pre-setup JAVA_HOME backup kept for a
 //! future `setup --undo`. The resolve reader skips them as unknown — the
 //! shim never consumes them — but this writer owns them and preserves
-//! them across rewrites.
+//! them across rewrites. Reading them still goes through that reader's
+//! `entries`: the file means one thing, not one thing per binary.
 
 use crate::error::{Error, Result};
 use crate::file_ops::atomic_rename;
-use jdk_resolve::config::Config;
+use jdk_resolve::config::{self, Config, ConfigError};
 use jdk_resolve::store;
 use std::fs;
 use std::io;
 use std::path::Path;
+
+/// Characters no value may carry into `config.toml`. A quote or a line break
+/// ends the value outright; `#` is legal in a Windows path and the current
+/// reader keeps it, but a shim copy deployed before that fix cuts the line
+/// there and rejects the whole file — so a mixed-version store stays readable
+/// only if we never write one.
+const UNWRITABLE: [char; 4] = ['"', '#', '\n', '\r'];
 
 /// The JAVA_HOME value `jdk setup` replaced: exact text plus whether it was
 /// `REG_EXPAND_SZ` (an undo must restore the registry type too).
@@ -32,11 +40,11 @@ pub fn write(root: &Path, config: &Config) -> Result<()> {
     emit(root, config, java_home_before(root)?.as_ref())
 }
 
-/// Records the pre-setup JAVA_HOME alongside `config`. Refuses a value the
-/// flat config subset cannot represent (quotes, line breaks) — the caller
-/// surfaces the old value instead of silently losing it.
+/// Records the pre-setup JAVA_HOME alongside `config`. Refuses a value
+/// `config.toml` cannot carry (see `UNWRITABLE`) — the caller surfaces the
+/// old value instead of silently losing it.
 pub fn save_java_home_before(root: &Path, config: &Config, backup: &JavaHomeBefore) -> Result<()> {
-    if backup.value.contains(['"', '\n', '\r']) {
+    if backup.value.contains(UNWRITABLE) {
         return Err(Error::Env(format!(
             "previous JAVA_HOME {:?} contains characters config.toml cannot hold",
             backup.value
@@ -46,26 +54,25 @@ pub fn save_java_home_before(root: &Path, config: &Config, backup: &JavaHomeBefo
 }
 
 /// The saved pre-setup JAVA_HOME, if any. A missing kind key reads as
-/// `REG_SZ`; an unknown kind is an error naming it.
+/// `REG_SZ`; an unknown kind is an error naming it. A file the shim's reader
+/// rejects is an error here too — the backup is destined for the registry, so
+/// half-read is worse than not read.
 pub fn java_home_before(root: &Path) -> Result<Option<JavaHomeBefore>> {
-    let text = match fs::read_to_string(store::config(root)) {
+    let path = store::config(root);
+    let text = match fs::read_to_string(&path) {
         Ok(text) => text,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(Error::io("read", &store::config(root))(err)),
+        Err(err) => return Err(Error::io("read", &path)(err)),
     };
 
     let mut value = None;
     let mut expandable = false;
-    for line in text.trim_start_matches('\u{feff}').lines() {
-        let line = line.split('#').next().unwrap_or_default().trim();
-        let Some((key, raw)) = line.split_once('=') else {
-            continue;
-        };
-        let unquoted = raw.trim().trim_matches('"');
-        match key.trim() {
-            "java-home-before" => value = Some(unquoted.to_string()),
+    for entry in config::entries(&text) {
+        let entry = entry.map_err(unreadable)?;
+        match entry.key {
+            "java-home-before" => value = Some(entry.string().map_err(unreadable)?.to_string()),
             "java-home-before-kind" => {
-                expandable = match unquoted {
+                expandable = match entry.string().map_err(unreadable)? {
                     "REG_SZ" => false,
                     "REG_EXPAND_SZ" => true,
                     other => {
@@ -75,14 +82,21 @@ pub fn java_home_before(root: &Path) -> Result<Option<JavaHomeBefore>> {
                     }
                 };
             }
+            // Keys this side does not own, the shim's two included.
             _ => {}
         }
     }
     Ok(value.map(|value| JavaHomeBefore { value, expandable }))
 }
 
+/// A config the shared reader turned down. Not a disagreement to paper over:
+/// the shim reads the same file by the same rules and is failing too.
+fn unreadable(err: ConfigError) -> Error {
+    Error::Env(err.to_string())
+}
+
 fn emit(root: &Path, config: &Config, backup: Option<&JavaHomeBefore>) -> Result<()> {
-    if config.vendor.is_empty() || config.vendor.contains('"') {
+    if config.vendor.is_empty() || config.vendor.contains(UNWRITABLE) {
         return Err(Error::Catalog(format!(
             "vendor {:?} cannot be written to config.toml",
             config.vendor
@@ -191,11 +205,76 @@ mod tests {
     #[test]
     fn refuses_a_backup_the_subset_cannot_hold() {
         let temp = TempDir::new().unwrap();
-        let hostile = JavaHomeBefore {
-            value: "C:\\evil\"quote".to_string(),
-            expandable: false,
-        };
-        assert!(save_java_home_before(temp.path(), &Config::default(), &hostile).is_err());
-        assert_eq!(java_home_before(temp.path()).unwrap(), None);
+        for hostile in [
+            "C:\\evil\"quote",
+            // Readable by the current reader, but a shim deployed before the
+            // quote-aware scanner cuts the line at the `#` and fails the file.
+            "C:\\Tools\\jdk#17",
+            "C:\\evil\nnewline",
+            "C:\\evil\rreturn",
+        ] {
+            let backup = JavaHomeBefore {
+                value: hostile.to_string(),
+                expandable: false,
+            };
+            assert!(
+                save_java_home_before(temp.path(), &Config::default(), &backup).is_err(),
+                "{hostile:?} must not reach config.toml"
+            );
+            assert_eq!(java_home_before(temp.path()).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn awkward_paths_survive_the_round_trip_on_both_sides() {
+        // `#` is refused going in now, but a config written before that rule
+        // (or by hand) still has to read back whole on both sides.
+        for value in [
+            r"C:\Tools\jdk#17",
+            r"C:\Program Files\Java\jdk-17",
+            r"%JDK17%\home",
+            r"C:\Usuários\José\jdk#21",
+            r"C:\Program Files (x86)\Java\jdk-8",
+        ] {
+            let temp = TempDir::new().unwrap();
+            let backup = JavaHomeBefore {
+                value: value.to_string(),
+                expandable: true,
+            };
+            emit(temp.path(), &Config::default(), Some(&backup)).unwrap();
+
+            assert_eq!(
+                java_home_before(temp.path()).unwrap(),
+                Some(backup),
+                "{value}"
+            );
+            assert_eq!(load(temp.path()).unwrap(), Config::default(), "{value}");
+        }
+    }
+
+    #[test]
+    fn both_readers_agree_on_the_same_text() {
+        // One reader erroring while the other returns a quietly truncated
+        // backup is the whole defect: the file says one thing, not one thing
+        // per binary asking.
+        for text in [
+            "vendor = \"zulu\"\njava-home-before = \"C:\\Tools\\jdk#17\"\n",
+            "java-home-before = \"C:\\Tools\\jdk#17\"  # replaced by setup\n",
+            "\u{feff}vendor = \"zulu\"\r\n\r\n# trailing note\r\n",
+            "",
+            "java-home-before = C:\\Tools\\jdk\n", // unquoted
+            "java-home-before\n",                  // no `=`
+            "vendor = \"zu\"lu\"\n",               // stray quote
+            "[table]\n",                           // TOML neither speaks
+        ] {
+            let temp = TempDir::new().unwrap();
+            fs::create_dir_all(temp.path()).unwrap();
+            fs::write(store::config(temp.path()), text).unwrap();
+            assert_eq!(
+                load(temp.path()).is_err(),
+                java_home_before(temp.path()).is_err(),
+                "the two readers disagree about {text:?}"
+            );
+        }
     }
 }
