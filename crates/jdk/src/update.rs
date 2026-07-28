@@ -1,8 +1,9 @@
 //! `jdk update`: self-update from this project's GitHub releases. The swap
 //! is in-process — verified bundle into `cache\update\`, the running
 //! `bin\jdk.exe` replaced through the same rename-aside the shims use
-//! ([`jdk_core::file_ops::replace_running`]), then the shims refreshed — so
-//! no second process is spawned and nothing has to re-run `setup`.
+//! ([`jdk_core::file_ops::replace_running`]), the bundle's `jdk-shim.exe`
+//! parked beside it, then the shims refreshed — so no second process is
+//! spawned and nothing has to re-run `setup`.
 //!
 //! A failure AFTER the exe swap leaves a fully verified new jdk.exe with
 //! possibly stale shims; the error says so and points at `jdk setup`, whose
@@ -16,6 +17,11 @@ use jdk_resolve::version::Version;
 use jdk_resolve::{exit, store};
 use std::fs;
 use std::path::Path;
+
+/// What every failure past the CLI swap has in common: the new jdk.exe is in
+/// place, only the shims may still be the old build.
+const SHIMS_LAG_BEHIND: &str =
+    "the new jdk.exe is already in place; `jdk setup` converges the shims";
 
 pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
     let bin = root.join("bin");
@@ -65,26 +71,16 @@ pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
 
     // The CLI swap: staged next to the destination, then the rename-aside
     // handles the fact that `dest` is THIS running process.
-    let incoming = dest.with_extension("exe.new");
-    file_ops::atomic_rename(&new_cli, &incoming).map_err(|err| {
-        Fail::new(
-            exit::FAILURE,
-            format!(
-                "cannot stage the new jdk.exe at {}: {err}",
-                incoming.display()
-            ),
-        )
-    })?;
-    if let Err(err) = file_ops::replace_running(&incoming, &dest) {
-        // Never leave a staging orphan behind, whatever failed.
-        let _ = fs::remove_file(&incoming);
-        return Err(Fail::engine(err));
-    }
+    swap_in(&new_cli, &dest)?;
+    // The shim template belongs beside it, and lands there BEFORE the shims
+    // are rewritten: `jdk setup` — what the hints below point at —
+    // materializes from the copy next to jdk.exe, and the staging carrying
+    // the bundle's shim is discarded a few lines down.
+    let stored_shim = bin.join("jdk-shim.exe");
+    swap_in(&new_shim, &stored_shim).map_err(|fail| fail.hint(SHIMS_LAG_BEHIND))?;
 
-    shims::materialize(&new_shim, &store::shims(root)).map_err(|err| {
-        Fail::engine(err)
-            .hint("the new jdk.exe is already in place; `jdk setup` converges the shims")
-    })?;
+    shims::materialize(&stored_shim, &store::shims(root))
+        .map_err(|err| Fail::engine(err).hint(SHIMS_LAG_BEHIND))?;
 
     let _ = fs::remove_dir_all(&staging);
     eprintln!("jdk: updated {local} → {remote}");
@@ -92,6 +88,30 @@ pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
         eprintln!(
             "  → the old copy was moved aside to jdk.exe.old; the next `jdk update` cleans it up"
         );
+    }
+    Ok(())
+}
+
+/// Stages `source` as `<dest>.new` and swaps it in, tolerating a `dest` that
+/// is EXECUTING — the running jdk.exe is one of them. `source` must already
+/// sit on the destination's volume, which is what staging the bundle under
+/// `<root>\cache` buys.
+fn swap_in(source: &Path, dest: &Path) -> Result<(), Fail> {
+    let incoming = dest.with_extension("exe.new");
+    file_ops::atomic_rename(source, &incoming).map_err(|err| {
+        Fail::new(
+            exit::FAILURE,
+            format!(
+                "cannot stage {} at {}: {err}",
+                source.display(),
+                incoming.display()
+            ),
+        )
+    })?;
+    if let Err(err) = file_ops::replace_running(&incoming, dest) {
+        // Never leave a staging orphan behind, whatever failed.
+        let _ = fs::remove_file(&incoming);
+        return Err(Fail::engine(err));
     }
     Ok(())
 }
@@ -117,8 +137,7 @@ fn decide(local: &Version, remote: &Version, force: bool) -> Decision {
 /// Only the store copy may update itself in place: a cargo-installed binary
 /// lives under `~\.cargo\bin` and belongs to cargo, and a loose build is not
 /// silently replaced either (the rustup/uv stance). Junctions and 8.3 short
-/// names are folded by canonicalizing both sides, same as setup's
-/// `place_cli`.
+/// names are folded by canonicalizing both sides.
 fn guard_store_copy(dest: &Path) -> Result<(), Fail> {
     let me = std::env::current_exe().map_err(|err| {
         Fail::new(

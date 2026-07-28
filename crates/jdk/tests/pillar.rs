@@ -59,7 +59,13 @@ impl World {
     }
 
     fn jdk(&self, args: &[&str]) -> Output {
-        Command::new(JDK)
+        self.jdk_at(Path::new(JDK), args)
+    }
+
+    /// The same hermetic invocation from an arbitrary jdk.exe — the store copy
+    /// resolves its shim from a different directory than the build output does.
+    fn jdk_at(&self, exe: &Path, args: &[&str]) -> Output {
+        Command::new(exe)
             .args(args)
             .current_dir(&self.project)
             .env("JDK_ROOT", &self.root)
@@ -207,6 +213,47 @@ fn setup_provisions_shims_registry_and_junction_then_reruns_as_a_no_op() {
         1,
         "never duplicated"
     );
+}
+
+/// BUG-01: every other test injects `--shim-source`, which is exactly why the
+/// installed layout stayed broken unnoticed. Here setup resolves the shim the
+/// way a real install does — next to the running jdk.exe — first from a bundle
+/// directory that then disappears, and again from `<root>\bin\jdk.exe`, where
+/// the only shim in reach is the one the first run parked there. `jdk setup` is
+/// what doctor prescribes in ten places; it has to work from the installation
+/// it produces.
+#[test]
+fn setup_places_the_shim_beside_the_cli_so_a_rerun_from_the_store_works() {
+    let world = World::new();
+    world.install_fake("temurin@21.0.5");
+    // What install.ps1 hands to setup: jdk.exe and jdk-shim.exe side by side
+    // in a directory it deletes in its `finally` — so whatever setup fails to
+    // copy into the store is gone for good.
+    let bundle = TempDir::new().unwrap();
+    let bundled_cli = bundle.path().join("jdk.exe");
+    fs::copy(JDK, &bundled_cli).unwrap();
+    fs::copy(&world.shim_source, bundle.path().join("jdk-shim.exe")).unwrap();
+    let shim_payload = fs::read(&world.shim_source).unwrap();
+
+    assert_ok(&world.jdk_at(&bundled_cli, &["setup"]));
+    drop(bundle);
+
+    let stored_shim = world.root.join("bin").join("jdk-shim.exe");
+    assert!(
+        fs::read(&stored_shim).unwrap() == shim_payload,
+        "bin\\jdk-shim.exe must be a byte-identical copy of the shim setup materialized from"
+    );
+
+    // Wiped so the rerun has to materialize for real instead of reporting the
+    // shims already current.
+    fs::remove_dir_all(world.root.join("shims")).unwrap();
+    let rerun = world.jdk_at(&world.root.join("bin").join("jdk.exe"), &["setup"]);
+
+    assert_ok(&rerun);
+    for tool in ["java", "javac", "jar", "javadoc", "jshell", "keytool"] {
+        let copy = fs::read(world.root.join("shims").join(format!("{tool}.exe"))).unwrap();
+        assert!(copy == shim_payload, "{tool}.exe must be byte-identical");
+    }
 }
 
 #[test]

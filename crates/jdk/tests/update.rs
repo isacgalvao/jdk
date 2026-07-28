@@ -125,6 +125,13 @@ fn update_swaps_the_running_store_copy_and_rewrites_the_shims() {
             tool.name
         );
     }
+    // BUG-01: the bundle's shim stays in `bin` after the staging is gone, so
+    // the `jdk setup` doctor recommends still has a source to materialize from.
+    assert_eq!(
+        fs::read(world.root.join("bin").join("jdk-shim.exe")).unwrap(),
+        b"new shim payload",
+        "the update must leave jdk-shim.exe next to the new jdk.exe"
+    );
     assert!(
         !world.root.join("bin").join("jdk.exe.new").exists(),
         "no staging orphan survives the update"
