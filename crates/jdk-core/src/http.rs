@@ -32,8 +32,8 @@ pub fn user_agent(component: &str) -> String {
 }
 
 /// Which URLs a client may touch, checked on the initial URL and on every
-/// redirect hop. Production uses [`UrlPolicy::Strict`]; the loopback variant
-/// exists for hermetic test servers and is the ONLY route to plain http —
+/// redirect hop. Production uses [`UrlPolicy::Strict`]; the loopback variants
+/// exist for hermetic test servers and are the ONLY route to plain http —
 /// there is no test-only compilation switch anywhere in the production path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UrlPolicy {
@@ -41,6 +41,12 @@ pub enum UrlPolicy {
     Strict,
     /// Like Strict, but loopback hosts are allowed, including over http.
     AllowInsecureLoopback,
+    /// Loopback hosts only, http or https: an external host is refused even
+    /// under https. For a client whose URL an env var may move at most to a
+    /// local test server — a redirect off loopback is then just another way
+    /// to spend that override, and dies on the same rule
+    /// ([`crate::release::base_url`]).
+    LoopbackOnly,
 }
 
 impl UrlPolicy {
@@ -48,14 +54,18 @@ impl UrlPolicy {
         if url.contains("..") {
             return Err(Error::Security(format!("suspicious URL: {url}")));
         }
+        let loopback = is_loopback(url_host(url));
+        if self == UrlPolicy::LoopbackOnly && !loopback {
+            return Err(Error::Security(format!("non-loopback URL rejected: {url}")));
+        }
         if url.strip_prefix("https://").is_some() {
-            if self == UrlPolicy::Strict && is_loopback(url_host(url)) {
+            if self == UrlPolicy::Strict && loopback {
                 return Err(Error::Security(format!("loopback URL rejected: {url}")));
             }
             return Ok(());
         }
         if url.strip_prefix("http://").is_some() {
-            if self == UrlPolicy::AllowInsecureLoopback && is_loopback(url_host(url)) {
+            if self != UrlPolicy::Strict && loopback {
                 return Ok(());
             }
             return Err(Error::Security(format!(
@@ -467,6 +477,18 @@ mod tests {
         assert!(policy.check("https://127.0.0.1:8443/x").is_ok());
         assert!(policy.check("http://example.com/x").is_err());
         assert!(policy.check("https://api.foojay.io/x").is_ok());
+    }
+
+    #[test]
+    fn loopback_only_policy_refuses_every_other_host() {
+        let policy = UrlPolicy::LoopbackOnly;
+        assert!(policy.check("http://127.0.0.1:8080/x").is_ok());
+        assert!(policy.check("https://localhost:8443/x").is_ok());
+        // An external host is refused under https too — that is the whole
+        // point of this variant over AllowInsecureLoopback.
+        assert!(policy.check("https://github.com/isacgalvao/jdk").is_err());
+        assert!(policy.check("http://example.com/x").is_err());
+        assert!(policy.check("ftp://127.0.0.1/x").is_err());
     }
 
     #[test]

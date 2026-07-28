@@ -19,6 +19,17 @@ license = "Apache-2.0"
 repository = "https://github.com/isacgalvao/jdk"
 publish = false
 
+# The internal crates, declared once so a release bumps one place. `version` is
+# the requirement cargo bakes into the published manifests, and cargo has no way
+# to inherit the package version into a dependency requirement — so it repeats
+# the version above. Forgetting it is not a silent drift: the path dependency no
+# longer satisfies the requirement and every `cargo check` fails to resolve.
+[workspace.dependencies]
+jdk-core = { path = "crates/jdk-core", version = "0.4.0" }
+jdk-resolve = { path = "crates/jdk-resolve", version = "0.4.0" }
+# Dev-only and never published, so it carries no requirement to keep in step.
+test-support = { path = "crates/test-support" }
+
 # Size-optimized profile for the shim, which is copied byte-identically once
 # per JDK tool — so every byte counts.
 [profile.release-shim]

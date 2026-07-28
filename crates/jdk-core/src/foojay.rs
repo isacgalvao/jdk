@@ -47,6 +47,11 @@ struct Details {
 /// listing does not drown in nightlies. The listing endpoint carries no
 /// checksum, so nothing returned here can be downloaded; resolution for
 /// install stays in [`find`].
+///
+/// Two queries, exactly as the index generator issues them: `latest` caps a
+/// query to one build per line, so a single `ea,ga` query with the cap would
+/// take the GA listing down with it — `--ea` would then show FEWER stable
+/// builds than the bare listing. A flag that adds must not remove.
 pub fn available(
     http: &Http,
     base_url: &str,
@@ -55,15 +60,13 @@ pub fn available(
     arch: &str,
     include_ea: bool,
 ) -> Result<Vec<Available>> {
-    let (status, latest) = if include_ea {
-        ("ea,ga", Some("available"))
-    } else {
-        ("ga", None)
-    };
-    let url = packages_url(base_url, vendor, os, arch, status, latest);
-    let listing: Envelope<Listing> = fetch_json(http, &url)?;
-    Ok(listing
-        .result
+    let ga_url = packages_url(base_url, vendor, os, arch, "ga", None);
+    let mut result = fetch_json::<Envelope<Listing>>(http, &ga_url)?.result;
+    if include_ea {
+        let ea_url = packages_url(base_url, vendor, os, arch, "ea", Some("available"));
+        result.extend(fetch_json::<Envelope<Listing>>(http, &ea_url)?.result);
+    }
+    Ok(result
         .into_iter()
         .map(|pkg| Available {
             vendor: vendor.to_string(),
@@ -105,7 +108,14 @@ pub fn find(
         if !version.matches(pattern) {
             continue;
         }
-        let stable = is_stable(release_status(pkg.release_status.as_deref()), &version);
+        let status = release_status(pkg.release_status.as_deref());
+        // The GA-only query already says this, but D2 is a rule about what
+        // may be installed, not about what a remote endpoint chose to honor:
+        // an EA build never satisfies a selector that did not name one.
+        if status == ReleaseStatus::Ea && pattern.pre_release.is_none() {
+            continue;
+        }
+        let stable = is_stable(status, &version);
         candidates.push((version, stable, pkg));
     }
     let Some(chosen) = pick_best(candidates) else {
@@ -208,6 +218,23 @@ mod tests {
             !url.contains("latest="),
             "the live fallback never caps: {url}"
         );
+    }
+
+    /// The listing's two queries: the cap belongs to the EA one alone, so
+    /// asking for early access cannot shrink the GA half of the listing.
+    #[test]
+    fn the_listing_caps_early_access_without_capping_ga() {
+        let ga = packages_url(DEFAULT_URL, "temurin", "windows", "x64", "ga", None);
+        let ea = packages_url(
+            DEFAULT_URL,
+            "temurin",
+            "windows",
+            "x64",
+            "ea",
+            Some("available"),
+        );
+        assert!(!ga.contains("latest="), "{ga}");
+        assert!(ea.contains("release_status=ea&latest=available"), "{ea}");
     }
 
     #[test]

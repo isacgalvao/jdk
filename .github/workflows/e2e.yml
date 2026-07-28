@@ -53,9 +53,9 @@ jobs:
 
       - name: build release (jdk.exe and jdk-shim.exe side by side)
         run: |
-          cargo build --release -p jdk --bin jdk
+          cargo build --locked --release -p jdk --bin jdk
           if ($LASTEXITCODE -ne 0) { throw 'building jdk failed' }
-          cargo build --release -p jdk-shim --bin jdk-shim
+          cargo build --locked --release -p jdk-shim --bin jdk-shim
           if ($LASTEXITCODE -ne 0) { throw 'building jdk-shim failed' }
 
       - name: jdk setup (real HKCU registry)

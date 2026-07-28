@@ -43,6 +43,10 @@ enum Command {
     Install {
         /// `vendor@version` or bare version: temurin@21, 21.0.5, zulu@17
         selector: String,
+        /// Accept the vendor's proprietary license terms (Oracle JDK, Oracle
+        /// GraalVM) instead of being asked
+        #[arg(long)]
+        accept_license: bool,
         /// Shim auto-install mode: lean output, no next-step hints
         #[arg(long, hide = true)]
         from_shim: bool,
@@ -116,8 +120,9 @@ fn run(cli: Cli) -> Result<(), Fail> {
     match cli.command {
         Command::Install {
             selector,
+            accept_license,
             from_shim,
-        } => install::run(&root, &selector, from_shim),
+        } => install::run(&root, &selector, from_shim, accept_license),
         Command::Uninstall { selector } => uninstall::run(&root, &selector),
         Command::List => list::run(&root),
         Command::Available { filter, latest, ea } => {

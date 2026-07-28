@@ -121,6 +121,17 @@ impl Fake {
 /// package. Every one of the six vendors answers (empty when absent from
 /// `packages`) so a run can pass the required-vendor floor.
 fn serve_foojay(server: &Server, packages: Vec<Fake>) {
+    serve_foojay_failing(server, packages, |_| false);
+}
+
+/// [`serve_foojay`] with a fault injector: `fails` sees each `/packages`
+/// query string and answers 500 when it returns true, so a test can knock out
+/// one axis (GA or EA) of one vendor while everything else stays healthy.
+fn serve_foojay_failing(
+    server: &Server,
+    packages: Vec<Fake>,
+    fails: impl Fn(&str) -> bool + Send + Sync + 'static,
+) {
     for fake in &packages {
         let body = format!(
             r#"{{"result":[{{"filename":"jdk.zip","direct_download_uri":"{}","checksum":"{}","checksum_type":"{}","checksum_uri":"{}"}}]}}"#,
@@ -136,6 +147,9 @@ fn serve_foojay(server: &Server, packages: Vec<Fake>) {
 
     server.route("/packages", move |request| {
         let query = &request.path;
+        if fails(query) {
+            return Response::empty(500);
+        }
         let arch = if query.contains("architecture=arm64,aarch64") {
             "aarch64"
         } else {
@@ -469,47 +483,10 @@ fn fails_when_a_required_vendor_is_empty() {
 #[test]
 fn a_best_effort_vendor_transport_error_does_not_abort_the_publish() {
     let server = Server::start();
-    let baseline = baseline();
-    // Detail routes for the six required vendors (oracle never gets that far).
-    for fake in &baseline {
-        let body = format!(
-            r#"{{"result":[{{"filename":"jdk.zip","direct_download_uri":"{}","checksum":"{}","checksum_type":"sha256","checksum_uri":""}}]}}"#,
-            fake.url,
-            fake.served_checksum(),
-        );
-        server.route(&format!("/ids/{}", fake.id), move |_| {
-            Response::ok(body.clone())
-        });
-    }
-    // The required vendors list normally; the best-effort oracle query
-    // hard-fails at the transport layer (HTTP 500 on either arch).
-    let items: Vec<(String, String)> = baseline
-        .iter()
-        .map(|fake| {
-            (
-                fake.vendor.to_string(),
-                format!(
-                    r#"{{"id":"{}","java_version":"{}","term_of_support":"lts","release_status":"ga","size":1000}}"#,
-                    fake.id, fake.version,
-                ),
-            )
-        })
-        .collect();
-    server.route("/packages", move |request| {
-        let query = &request.path;
-        if query.contains("distribution=oracle") {
-            return Response::empty(500);
-        }
-        // These fakes are all GA; the EA (`latest=available`) query answers empty.
-        if query.contains("architecture=arm64,aarch64") || query.contains("release_status=ea") {
-            return Response::ok(r#"{"result":[]}"#.to_string());
-        }
-        let listed: Vec<String> = items
-            .iter()
-            .filter(|(vendor, _)| query.contains(&format!("distribution={vendor}")))
-            .map(|(_, item)| item.clone())
-            .collect();
-        Response::ok(format!(r#"{{"result":[{}]}}"#, listed.join(",")))
+    // The required vendors list normally; the best-effort oracle hard-fails at
+    // the transport layer (HTTP 500 on either arch, either release status).
+    serve_foojay_failing(&server, baseline(), |query| {
+        query.contains("distribution=oracle")
     });
 
     let out = tempfile::tempdir().unwrap();
@@ -537,6 +514,93 @@ fn a_best_effort_vendor_transport_error_does_not_abort_the_publish() {
         warnings.contains("best-effort") && warnings.contains("oracle"),
         "{warnings}"
     );
+}
+
+#[test]
+fn an_ea_query_failure_does_not_veto_the_ga_catalog() {
+    let server = Server::start();
+    let mut packages = baseline();
+    packages.push(Fake::ga("temurin", "x64", "24.0.1+9"));
+    packages.push(Fake::ga("temurin", "x64", "25-ea+3").ea());
+    // Only the early-access half of a REQUIRED vendor is down: the optional
+    // axis must not take the publish — or temurin's GA history — with it.
+    serve_foojay_failing(&server, packages, |query| {
+        query.contains("release_status=ea") && query.contains("distribution=temurin")
+    });
+
+    let out = tempfile::tempdir().unwrap();
+    let output = generate(&server, out.path(), &[]);
+    assert_ok(&output);
+
+    let temurin = read_packages(out.path(), "windows-x64/temurin.json");
+    let versions: Vec<&str> = temurin.iter().map(|p| p.version.as_str()).collect();
+    assert_eq!(
+        versions,
+        ["24.0.1+9", "21.0.5+11"],
+        "the GA history publishes, only the EA line is missing"
+    );
+
+    // Diagnosable without the query string at hand: vendor, arch, and cause.
+    let warnings = stderr(&output);
+    assert!(warnings.contains("windows-x64/temurin"), "{warnings}");
+    assert!(warnings.contains("early-access"), "{warnings}");
+    assert!(warnings.contains("returned 500"), "{warnings}");
+}
+
+#[test]
+fn a_ga_query_failure_still_aborts_a_required_vendor() {
+    // GA down, EA answering: the axis people actually install from is
+    // missing, so the run must still refuse to publish a half temurin.
+    let ga_down = Server::start();
+    serve_foojay_failing(&ga_down, baseline(), |query| {
+        query.contains("release_status=ga") && query.contains("distribution=temurin")
+    });
+    let out = tempfile::tempdir().unwrap();
+    let output = generate(&ga_down, out.path(), &[]);
+    assert!(
+        !output.status.success(),
+        "a required vendor's GA outage must abort the publish"
+    );
+    assert!(
+        stderr(&output).contains("returned 500"),
+        "{}",
+        stderr(&output)
+    );
+
+    // Both axes down: same verdict — the GA failure is the one that decides.
+    let both_down = Server::start();
+    serve_foojay_failing(&both_down, baseline(), |query| {
+        query.contains("distribution=temurin")
+    });
+    let out = tempfile::tempdir().unwrap();
+    let output = generate(&both_down, out.path(), &[]);
+    assert!(
+        !output.status.success(),
+        "a required vendor with both queries down must abort the publish"
+    );
+}
+
+#[test]
+fn a_best_effort_vendors_ea_outage_keeps_its_ga_packages() {
+    let server = Server::start();
+    let mut packages = baseline();
+    packages.push(Fake::ga("oracle", "x64", "25.0.2"));
+    serve_foojay_failing(&server, packages, |query| {
+        query.contains("release_status=ea") && query.contains("distribution=oracle")
+    });
+
+    let out = tempfile::tempdir().unwrap();
+    let output = generate(&server, out.path(), &[]);
+    assert_ok(&output);
+
+    // The EA warning is raised inside the fetch, so `main` never reaches its
+    // skip-the-whole-vendor arm: oracle is published, minus its EA builds.
+    let oracle = read_packages(out.path(), "windows-x64/oracle.json");
+    let versions: Vec<&str> = oracle.iter().map(|p| p.version.as_str()).collect();
+    assert_eq!(versions, ["25.0.2"]);
+    let warnings = stderr(&output);
+    assert!(warnings.contains("windows-x64/oracle"), "{warnings}");
+    assert!(warnings.contains("early-access"), "{warnings}");
 }
 
 #[test]

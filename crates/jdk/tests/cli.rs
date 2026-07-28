@@ -157,6 +157,38 @@ fn bare_selector_installs_the_config_vendor() {
     assert!(world.candidate("zulu@21.0.5+11").exists());
 }
 
+/// D2: a line the catalog carries only as early access is refused for a
+/// plain GA selector — no nightly arrives unannounced — and the refusal
+/// names the pre-release selector, which then installs it with no flag.
+#[test]
+fn an_early_access_only_line_is_refused_and_the_named_selector_installs_it() {
+    let server = Server::start();
+    let mut nightly = served_package(&server, "27-ea+31");
+    nightly.release_status = ReleaseStatus::Ea;
+    nightly.lts = false;
+    serve_catalog(&server, std::slice::from_ref(&nightly));
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["install", "temurin@27"]);
+
+    assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
+    let refusal = stderr(&output);
+    assert!(
+        refusal.contains("no general-availability build"),
+        "{refusal}"
+    );
+    assert!(refusal.contains("jdk install temurin@27-ea"), "{refusal}");
+    assert_eq!(
+        server.hits("/dl/27-ea+31.zip"),
+        0,
+        "a refused selector downloads nothing"
+    );
+
+    let output = world.jdk(&["install", "temurin@27-ea"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(world.candidate("temurin@27-ea+31").exists());
+}
+
 #[test]
 fn uninstall_removes_a_free_candidate_and_blocks_an_in_use_one() {
     let world = World::offline();
@@ -292,6 +324,127 @@ fn available_lists_flags_filters_and_trims_to_latest() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout(&output), "", "no data on stdout for an empty match");
     assert!(stderr(&output).contains("nothing"), "{}", stderr(&output));
+}
+
+/// The listing and the installer must agree on what exists: a version only
+/// early access satisfies is shown instead of denied, and the pre-release
+/// selector needs no more flags here than it does for `jdk install`.
+#[test]
+fn available_shows_the_early_access_line_that_install_resolves() {
+    let server = Server::start();
+    let mut nightly = package(
+        "27-ea+31",
+        "https://example.invalid/a.zip",
+        &"a".repeat(64),
+        1,
+    );
+    nightly.release_status = ReleaseStatus::Ea;
+    nightly.lts = false;
+    let stable = package(
+        "21.0.5",
+        "https://example.invalid/b.zip",
+        &"b".repeat(64),
+        1,
+    );
+    serve_catalog(&server, &[nightly, stable]);
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["available", "temurin@27"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains("temurin@27-ea+31"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stderr(&output).contains("only early-access builds match temurin@27"),
+        "the switch is announced: {}",
+        stderr(&output)
+    );
+
+    let output = world.jdk(&["available", "temurin@27-ea"]);
+    assert!(
+        stdout(&output).contains("temurin@27-ea+31"),
+        "a pre-release filter implies --ea: {}",
+        stdout(&output)
+    );
+
+    // A stable filter is untouched by all this: no widening, no EA rows.
+    let output = world.jdk(&["available", "temurin@21"]);
+    let listing = stdout(&output);
+    assert!(
+        listing.contains("temurin@21.0.5") && !listing.contains("27-ea"),
+        "{listing}"
+    );
+}
+
+/// `--ea --latest` used to cancel out: grouping by vendor+major alone let
+/// every stable line swallow its own preview, so early access survived only
+/// for majors with no GA at all.
+#[test]
+fn latest_with_early_access_keeps_both_the_ga_and_the_ea_of_a_line() {
+    let server = Server::start();
+    let mut nightly = package(
+        "21.0.6-ea",
+        "https://example.invalid/a.zip",
+        &"a".repeat(64),
+        1,
+    );
+    nightly.release_status = ReleaseStatus::Ea;
+    let older = package(
+        "21.0.4",
+        "https://example.invalid/b.zip",
+        &"b".repeat(64),
+        1,
+    );
+    let newer = package(
+        "21.0.5",
+        "https://example.invalid/c.zip",
+        &"c".repeat(64),
+        1,
+    );
+    serve_catalog(&server, &[nightly, older, newer]);
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["available", "--latest", "--ea", "temurin"]);
+    let listing = stdout(&output);
+    assert!(listing.contains("temurin@21.0.5"), "{listing}");
+    assert!(listing.contains("temurin@21.0.6-ea"), "{listing}");
+    assert!(
+        !listing.contains("temurin@21.0.4"),
+        "still one per status: {listing}"
+    );
+
+    let output = world.jdk(&["available", "--latest", "temurin"]);
+    let listing = stdout(&output);
+    assert!(
+        listing.contains("temurin@21.0.5") && !listing.contains("21.0.6-ea"),
+        "without the flag the line keeps only its stable build: {listing}"
+    );
+}
+
+/// A vendor with no early access at all says so, instead of leaving `--ea`
+/// looking broken.
+#[test]
+fn ea_on_a_vendor_that_publishes_none_says_so() {
+    let server = Server::start();
+    let stable = package(
+        "21.0.5",
+        "https://example.invalid/a.zip",
+        &"a".repeat(64),
+        1,
+    );
+    serve_catalog(&server, std::slice::from_ref(&stable));
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["available", "temurin@99", "--ea"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("temurin has no early-access builds"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -635,6 +788,94 @@ fn pin_file_with_bom_crlf_and_comment_resolves_successfully() {
             .join("bin")
             .join("java.exe")
     );
+}
+
+/// D4: Oracle's terms are not this tool's to accept on the user's behalf.
+/// Without consent the install stops before any download — the archive route
+/// is never touched — and the refusal names the flag that carries consent.
+/// A test harness has no console, which is the same position CI and the shim
+/// are in: refuse, never hang waiting for an answer nobody can give.
+#[test]
+fn a_proprietary_vendor_needs_consent_before_anything_is_downloaded() {
+    let server = Server::start();
+    let mut oracle = served_package(&server, "25.0.2");
+    oracle.vendor = "oracle".to_string();
+    serve_catalog(&server, std::slice::from_ref(&oracle));
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["install", "oracle@25"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(exit::CONFIG),
+        "stderr: {}",
+        stderr(&output)
+    );
+    let refusal = stderr(&output);
+    assert!(refusal.contains("NFTC"), "the terms come first: {refusal}");
+    assert!(refusal.contains("--accept-license"), "{refusal}");
+    assert_eq!(
+        server.hits("/dl/25.0.2.zip"),
+        0,
+        "no download of any kind without consent"
+    );
+    assert!(!world.candidate("oracle@25.0.2").exists());
+}
+
+/// The other half of D4: the flag consents, and only then does the download
+/// carry the cookie by which Oracle records that acceptance — the mechanism
+/// that made an unattended install a problem in the first place.
+#[test]
+fn accept_license_consents_and_the_oracle_cookie_reaches_the_wire() {
+    let server = Server::start();
+    let mut oracle = served_package(&server, "25.0.2");
+    oracle.vendor = "oracle".to_string();
+    serve_catalog(&server, std::slice::from_ref(&oracle));
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["install", "oracle@25", "--accept-license"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(world.candidate("oracle@25.0.2").exists());
+    let requests = server.requests_to("/dl/25.0.2.zip");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].header("cookie"),
+        Some("oraclelicense=accept-securebackup-cookie"),
+        "the acceptance cookie rides on a consented download"
+    );
+
+    // Already in the store: the re-run fetches nothing, so it asks nothing
+    // either — consent gates the download, not the command.
+    let output = world.jdk(&["install", "oracle@25"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("already installed"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(server.hits("/dl/25.0.2.zip"), 1, "one download total");
+}
+
+/// The shim path never asks: someone who typed `java` did not ask to enter a
+/// license agreement, so auto-install refuses proprietary vendors outright.
+#[test]
+fn the_shim_install_path_refuses_proprietary_terms_instead_of_accepting_them() {
+    let server = Server::start();
+    let mut oracle = served_package(&server, "25.0.2");
+    oracle.vendor = "oracle".to_string();
+    serve_catalog(&server, std::slice::from_ref(&oracle));
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["install", "oracle@25", "--from-shim"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(exit::CONFIG),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(server.hits("/dl/25.0.2.zip"), 0);
 }
 
 #[test]

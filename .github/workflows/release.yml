@@ -1,10 +1,10 @@
-# Builds and publishes a jdk release. A tag push (`v*`) signs the artifacts
-# (keyless cosign over SHA256SUMS plus SLSA build-provenance attestations),
-# publishes a GitHub release and then the crates.io crates (jdk-resolve,
-# jdk-core, jdk, in dependency order — needs the CARGO_REGISTRY_TOKEN secret);
-# a manual run is a dry-run that only builds and uploads the same artifacts as
-# workflow artifacts (unsigned), so the pipeline can be exercised without
-# cutting a release.
+# Builds and publishes a jdk release. A tag push (`v*`) runs the full CI gates
+# at the tagged commit, signs the artifacts (keyless cosign over SHA256SUMS plus
+# SLSA build-provenance attestations), publishes a GitHub release and then the
+# crates.io crates (jdk-resolve, jdk-core, jdk, in dependency order — needs the
+# CARGO_REGISTRY_TOKEN secret); a manual run is a dry-run that runs the same
+# gates and uploads the same artifacts as workflow artifacts (unsigned), so the
+# pipeline can be exercised without cutting a release.
 #
 # Everything runs on Windows: the shim, the Defender scan and the zips are all
 # Windows-native. aarch64 is best-effort (continue-on-error) and never blocks
@@ -27,7 +27,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # fmt, clippy, the test suite, the MSRV check and cargo deny, run at the
+  # tagged commit before anything is built or uploaded. Until now the tag
+  # inherited no verification at all: ci.yml never triggered on tags, so
+  # publishing rested on the maintainer having pushed master first — a
+  # convention in RELEASING.md, not something the pipeline enforced.
+  #
+  # Calling ci.yml instead of copying its jobs here is what keeps the two
+  # honest. The alternative, ci.yml triggering on `push: tags`, cannot gate
+  # anything: Actions has no cross-workflow `needs`, and `workflow_run` fires
+  # after the fact in the default branch's context, so the release would still
+  # start regardless of the result.
+  gates:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   release:
+    needs: gates
     runs-on: windows-2025
     permissions:
       contents: write
@@ -75,11 +92,25 @@ jobs:
       - name: audit dependencies for known vulnerabilities
         run: cargo audit
 
+      # Pre-flight for the crates.io publish at the end of the run: packages the
+      # three crates and runs their verification builds while failing is still
+      # free. An upload cannot be taken back — a jdk-core that fails to package
+      # after jdk-resolve is already on crates.io leaves the version half
+      # published, and the only way out is to burn the number.
+      #
+      # Before the artifacts are assembled on purpose: `cargo publish` refuses a
+      # dirty working tree, and `dist/` is not ignored.
+      - name: publish dry-run (same command the publish job runs)
+        run: cargo publish --dry-run --locked -p jdk-resolve -p jdk-core -p jdk
+
+      # --locked on every build: cargo audit judged the committed Cargo.lock a
+      # step ago, and a build free to resolve something newer would embed an
+      # SBOM — and sign a binary — for a dependency graph no gate ever saw.
       - name: build jdk.exe (x64, SBOM embedded)
-        run: cargo auditable build --release -p jdk --bin jdk
+        run: cargo auditable build --locked --release -p jdk --bin jdk
 
       - name: build jdk-shim.exe (x64, size profile)
-        run: cargo build --profile release-shim -p jdk-shim --bin jdk-shim
+        run: cargo build --locked --profile release-shim -p jdk-shim --bin jdk-shim
 
       - name: shim size gate (< 1 MiB)
         run: |
@@ -91,8 +122,8 @@ jobs:
         id: arm64
         continue-on-error: true
         run: |
-          cargo auditable build --release -p jdk --bin jdk --target aarch64-pc-windows-msvc
-          cargo build --profile release-shim -p jdk-shim --bin jdk-shim --target aarch64-pc-windows-msvc
+          cargo auditable build --locked --release -p jdk --bin jdk --target aarch64-pc-windows-msvc
+          cargo build --locked --profile release-shim -p jdk-shim --bin jdk-shim --target aarch64-pc-windows-msvc
 
       # Each zip carries jdk.exe, jdk-shim.exe side by side (what `jdk setup`
       # needs) plus LICENSE and README.md. A `<file>.sha256` sidecar
@@ -221,12 +252,19 @@ jobs:
           gh release create $env:GITHUB_REF_NAME --title "jdk $env:GITHUB_REF_NAME" --notes $notes @assets
 
   # After a tag's release build/scan and GitHub release succeed, publish the
-  # three crates.io crates in dependency order. Windows-native so the
-  # `cargo publish` verification build (jdk-core/jdk are Windows-only) matches
-  # the manual publish. cargo waits for each crate to be indexed before the
-  # next resolves. jdk-index-gen and test-support are `publish = false`;
-  # jdk-shim is not a published crate. Requires the CARGO_REGISTRY_TOKEN
-  # secret (a crates.io API token) — absent it, this job fails.
+  # three crates.io crates. One invocation for all three: cargo packages and
+  # verifies every crate before uploading any of them, orders them by dependency
+  # and waits for each to be indexed — so the window where a later failure can
+  # leave the version half published is as narrow as cargo can make it. The dry
+  # run in the release job has already walked this exact path.
+  #
+  # Windows-native so the verification build (jdk-core/jdk are Windows-only)
+  # matches the manual publish. The set is named explicitly rather than taken
+  # from `--workspace`: jdk-index-gen and test-support are `publish = false` and
+  # jdk-shim is not published, and naming them here means a new crate cannot
+  # reach crates.io by forgetting a manifest key. Requires the
+  # CARGO_REGISTRY_TOKEN secret (a crates.io API token) — absent it, this job
+  # fails.
   publish-crates:
     needs: release
     if: github.event_name == 'push' && github.ref_type == 'tag'
@@ -238,11 +276,6 @@ jobs:
       # first cargo call.
 
       - name: publish to crates.io (jdk-resolve -> jdk-core -> jdk)
-        shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          set -euo pipefail
-          cargo publish -p jdk-resolve
-          cargo publish -p jdk-core
-          cargo publish -p jdk
+        run: cargo publish --locked -p jdk-resolve -p jdk-core -p jdk

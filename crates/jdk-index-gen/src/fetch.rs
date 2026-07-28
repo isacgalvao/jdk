@@ -42,6 +42,12 @@
 //! a channel. A failed detail CALL aborts the run (dropping it would
 //! silently shrink the index — anti-model 7); a package that finishes the
 //! chain without a sha256 is dropped with a counted warning.
+//!
+//! The two listing queries do NOT carry the same weight: a failed GA query
+//! propagates, leaving the required/best-effort verdict to `main`, while a
+//! failed EA query only warns. Early access is an optional axis of the
+//! catalog and must not hold a veto over the GA history the same vendor
+//! already answered for.
 
 use crate::validate::Published;
 use jdk_core::download::check_trusted;
@@ -139,7 +145,16 @@ pub fn vendor_packages(
     let ga_url = packages_url(base_url, vendor, arch, "ga", None);
     let ea_url = packages_url(base_url, vendor, arch, "ea", Some("available"));
     let mut items = fetch_json::<Envelope<Listing>>(http, &ga_url)?.result;
-    items.extend(fetch_json::<Envelope<Listing>>(http, &ea_url)?.result);
+    // Warn+continue on the EA axis: the same policy `main` applies to a
+    // best-effort vendor, applied here to the optional half of a required
+    // one. Propagating this would let a preview-build outage abort the whole
+    // publish — the GA history of every other vendor included.
+    match fetch_json::<Envelope<Listing>>(http, &ea_url) {
+        Ok(envelope) => items.extend(envelope.result),
+        Err(err) => eprintln!(
+            "warning: windows-{arch}/{vendor} early-access query failed ({err}); publishing its GA packages only"
+        ),
+    }
 
     let resolved = fetch_details(http, base_url, &items, jobs)?;
 

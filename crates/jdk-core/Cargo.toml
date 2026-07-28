@@ -9,7 +9,7 @@ repository.workspace = true
 publish = true
 
 [dependencies]
-jdk-resolve = { path = "../jdk-resolve", version = "0.4.0" }
+jdk-resolve.workspace = true
 # Sync HTTP over rustls, proxy from env; redirects are followed manually so the
 # HTTPS-only policy and vendor headers apply to every hop.
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
@@ -36,4 +36,4 @@ winreg = "0.56.0"
 
 [dev-dependencies]
 tempfile = "3"
-test-support = { path = "../test-support" }
+test-support.workspace = true

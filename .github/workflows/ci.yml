@@ -4,6 +4,17 @@ on:
   pull_request:
   push:
     branches: [master, main]
+  # release.yml calls this workflow at the tagged commit rather than copying the
+  # gates into itself, so a tag is held to exactly what a pull request is held
+  # to, and the two can never drift apart.
+  workflow_call:
+
+# Least privilege, the same policy release.yml declares: no job here writes
+# anything back to the repository, so the token stays read-only. Without this
+# block the workflow would inherit whatever the repository default happens to
+# be, which is the one setting a workflow file cannot review.
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -13,19 +24,42 @@ jobs:
       # No toolchain action: rust-toolchain.toml pins the channel, components
       # (clippy, rustfmt) and target, and rustup auto-installs it on the first
       # cargo call below.
-      - name: version consistency
-        shell: pwsh
-        run: ./scripts/check-versions.ps1
+      #
+      # --locked everywhere: the committed Cargo.lock is what deny, audit and
+      # the release build all judge, so nothing in CI may quietly resolve a
+      # different graph than the one that passed the gates.
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo build --profile release-shim -p jdk-shim --bin jdk-shim
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo build --locked --profile release-shim -p jdk-shim --bin jdk-shim
       - name: shim size gate (< 1 MiB)
         shell: pwsh
         run: |
           $shim = Get-Item target/release-shim/jdk-shim.exe
           Write-Host "jdk-shim.exe: $($shim.Length) bytes"
           if ($shim.Length -ge 1MB) { throw "jdk-shim.exe is $($shim.Length) bytes, gate is < 1 MiB" }
+
+  # rust-version is a promise to whoever runs `cargo install jdk` on an older
+  # toolchain, and nothing else in the pipeline keeps it: rust-toolchain.toml
+  # pins a much newer channel and is the only rustc anything ever builds with.
+  # Windows because half the workspace is Windows-only, so a check anywhere else
+  # would prove the MSRV for code the release never ships.
+  msrv:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: check the workspace with the declared MSRV
+        shell: pwsh
+        run: |
+          # Read from the manifest rather than pinning a second copy here: the
+          # claim and the gate then cannot drift apart.
+          $msrv = (Select-String -Path Cargo.toml -Pattern '^rust-version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          Write-Host "declared MSRV: $msrv"
+          rustup toolchain install $msrv --profile minimal --no-self-update
+          # Libraries and binaries only. Dev-dependencies are not part of what a
+          # consumer builds, and holding them to the MSRV would let a benchmark
+          # crate dictate the toolchain the product claims to support.
+          cargo +$msrv check --locked --workspace
 
   deny:
     runs-on: ubuntu-latest
@@ -34,4 +68,4 @@ jobs:
       - uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9  # v2
         with:
           tool: cargo-deny@0.20.2
-      - run: cargo deny check
+      - run: cargo deny --locked check

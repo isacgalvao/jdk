@@ -11,8 +11,8 @@ publish.workspace = true
 # Reuses jdk-core's index types and HTTP client, so the generator produces the
 # contract the client consumes by construction.
 [dependencies]
-jdk-core = { path = "../jdk-core" }
-jdk-resolve = { path = "../jdk-resolve" }
+jdk-core.workspace = true
+jdk-resolve.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,4 +24,4 @@ sha2 = "0.11"
 
 [dev-dependencies]
 tempfile = "3"
-test-support = { path = "../test-support" }
+test-support.workspace = true

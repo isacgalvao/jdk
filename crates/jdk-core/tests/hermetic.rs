@@ -9,7 +9,7 @@ use jdk_core::cache::Cache;
 use jdk_core::catalog::{Catalog, Origin};
 use jdk_core::download::{MAX_ARCHIVE, fetch_archive, fetch_archive_capped, sha256_hex};
 use jdk_core::http::{Http, Retry, UrlPolicy};
-use jdk_core::index::{IndexEntry, IndexFile, current_platform};
+use jdk_core::index::{IndexEntry, IndexFile, ReleaseStatus, current_platform};
 use jdk_core::install::install;
 use jdk_core::release;
 use jdk_resolve::store;
@@ -675,6 +675,53 @@ fn foojay_without_sha256_is_refused() {
     assert!(err.to_string().contains("no sha256"), "{err}");
 }
 
+/// `--ea` must only ADD: the GA half of the live listing is fetched uncapped
+/// and `latest` belongs to the early-access query alone. The single combined
+/// `ea,ga` query it replaces carried the cap over the GA builds too, so the
+/// flag listed FEWER stable versions than the bare listing.
+#[test]
+fn the_ea_listing_adds_early_access_without_capping_the_ga_half() {
+    let temp = TempDir::new().unwrap();
+    let (os, arch) = current_platform();
+    let server = Server::start();
+
+    let ga = r#"{"result":[
+        {"id":"a","java_version":"21.0.4","distribution":"temurin","term_of_support":"lts","release_status":"ga","size":1},
+        {"id":"b","java_version":"21.0.5","distribution":"temurin","term_of_support":"lts","release_status":"ga","size":1}
+    ]}"#;
+    let ea = r#"{"result":[{"id":"c","java_version":"27-ea+31","distribution":"temurin","release_status":"ea","size":1}]}"#;
+    // The routing key drops the query string, so both listing queries land
+    // here; `release_status` is what tells them apart.
+    server.route("/packages", move |request: &Request| {
+        if request.path.contains("release_status=ea&") {
+            Response::ok(ea)
+        } else {
+            Response::ok(ga)
+        }
+    });
+
+    let catalog = Catalog::with_urls(temp.path(), &dead_url(), server.url());
+    let listing = catalog
+        .available(&http(), "temurin", os, arch, true)
+        .unwrap();
+
+    let versions: Vec<&str> = listing.iter().map(|entry| entry.version.as_str()).collect();
+    assert_eq!(versions, ["21.0.4", "21.0.5", "27-ea+31"]);
+
+    let requests = server.requests_to("/packages");
+    assert_eq!(requests.len(), 2);
+    assert!(
+        !requests[0].path.contains("latest="),
+        "the GA query is never capped: {}",
+        requests[0].path
+    );
+    assert!(
+        requests[1].path.contains("latest=available"),
+        "the EA query is capped to each line's latest: {}",
+        requests[1].path
+    );
+}
+
 /// A resumed download whose Content-Range declares a total over the REAL
 /// `MAX_ARCHIVE` ceiling: the ceiling trips on the header alone, before the
 /// body loop ever runs (the read loop is never entered, so the served bytes
@@ -1097,6 +1144,41 @@ fn index_reachable_but_no_matching_version_falls_through_to_foojay_with_a_combin
         1,
         "the index miss must still fall through to a foojay lookup"
     );
+}
+
+/// A line the index carries only as early access (`27`, `21.0.12` and friends
+/// against the published index): the GA selector is refused instead of being
+/// handed a nightly, and the selector the refusal names resolves to that very
+/// build — no flag involved, so listing and installing can agree on it.
+#[test]
+fn an_early_access_only_line_is_refused_unless_the_selector_names_it() {
+    let temp = TempDir::new().unwrap();
+    let server = Server::start();
+
+    let mut nightly = package("27-ea+31", "https://adoptium.net/x.zip", &"a".repeat(64), 1);
+    nightly.release_status = ReleaseStatus::Ea;
+    serve_catalog(&server, std::slice::from_ref(&nightly));
+
+    let http = http();
+    let catalog = Catalog::with_urls(temp.path(), server.url(), &dead_url());
+    let err = catalog
+        .find(&http, &"temurin@27".parse().unwrap(), "temurin")
+        .unwrap_err();
+
+    assert!(
+        err.to_string().contains("no general-availability build"),
+        "{err}"
+    );
+    assert!(
+        err.to_string().contains("jdk install temurin@27-ea"),
+        "{err}"
+    );
+
+    let (found, origin) = catalog
+        .find(&http, &"temurin@27-ea".parse().unwrap(), "temurin")
+        .unwrap();
+    assert_eq!(origin, Origin::Index);
+    assert_eq!(found.version, "27-ea+31");
 }
 
 // --- self-update release source (jdk_core::release) ----------------------

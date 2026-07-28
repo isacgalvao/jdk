@@ -1,14 +1,13 @@
 <h1 align="center">jdk</h1>
 
 <p align="center">
-  <b>A Windows-first Java version manager.</b><br>
+  <b>A Java version manager for Windows.</b><br>
   Install, switch and pin JDKs — no admin rights, no shell reload.
 </p>
 
 <p align="center">
   <a href="https://crates.io/crates/jdk"><img src="https://img.shields.io/crates/v/jdk.svg?colorB=319e8c" alt="crates.io version"></a>
   <a href="https://crates.io/crates/jdk"><img src="https://img.shields.io/crates/l/jdk.svg" alt="license"></a>
-  <img src="https://img.shields.io/badge/MSRV-1.89-blue.svg" alt="minimum supported Rust version">
   <a href="https://github.com/isacgalvao/jdk/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/isacgalvao/jdk/ci.yml?branch=master&label=ci" alt="CI status"></a>
   <a href="https://github.com/isacgalvao/jdk/releases"><img src="https://img.shields.io/github/downloads/isacgalvao/jdk/total.svg" alt="downloads"></a>
 </p>
@@ -23,31 +22,41 @@
   <a href="#configuration">Configuration</a>
 </p>
 
-Real `.exe` shims for `java`, `javac` and friends resolve the right JDK per
-project on every invocation, and a persistent `JAVA_HOME` keeps Maven, Gradle
-and your IDE pointed at the version you chose. If you have used SDKMAN on Linux
-or macOS, this is the piece Windows was missing: clone a project that ships a
-`.sdkmanrc` and it just works.
-
-<!-- TODO: demo.gif — asciicast/GIF of `jdk install`, `jdk use`, `jdk pin`, auto-switch on cd -->
+Real `.exe` shims for `java`, `javac` and four more tools resolve the right JDK
+per project on every invocation, and a persistent `JAVA_HOME` gives Maven,
+Gradle and your IDE one stable path to point at. If you have used SDKMAN on
+Linux or macOS, this is the piece Windows was missing: clone a project that
+ships a `.sdkmanrc` and it just works.
 
 ## Features
 
-- **No administrator rights.** `JAVA_HOME` is a directory **junction**, not a
-  symlink, so nothing here needs elevation or Developer Mode.
+- **No administrator rights.** `JAVA_HOME` points at a directory **junction**,
+  not a symlink, so nothing here needs elevation or Developer Mode.
 - **Per-project auto-switch.** The shims read the version pinned by the project
   on every call — walk into a repo and `java` is already the right one.
 - **Reads what you already have.** `.jdkrc`, `.sdkmanrc`, `.java-version` and
   asdf `.tool-versions` are all understood, SDKMAN vendor suffixes included.
-- **Switch with no reload.** `jdk use` retargets the junction; every open
-  console and IDE picks up the new JDK on its next `java` call. No restart, no
-  logoff.
-- **Multi-vendor catalog.** Temurin, Zulu, Corretto, Liberica, Microsoft,
-  GraalVM, Oracle, and more — sourced from the foojay Disco API.
+- **Switch with no reload.** `jdk use` retargets the junction, so every console
+  you already have open runs the new JDK on its next `java` call — no restart,
+  no logoff. An IDE is a different story: it caches the SDK by path and a
+  running Gradle daemon holds its JVM, so those need their own restart.
+- **Six real shims.** `java`, `javac`, `jar`, `javadoc`, `jshell` and
+  `keytool` — separate `.exe` files, not batch wrappers. The rest of the JDK's
+  tools (`jlink`, `jpackage`, `javap`, `jcmd`, …) are not on `PATH`; `jdk which
+  <tool>` prints the full path of any tool the resolved JDK ships.
+- **Seven vendors, fixed.** Temurin, Zulu, Corretto, Liberica, GraalVM,
+  Microsoft and Oracle — the set the catalog index publishes, generated from
+  the foojay Disco API. When the index has not caught up with a release, the
+  live API answers instead; either way the download must come from a known
+  vendor host and match a mandatory SHA-256.
 - **One small binary.** A focused Rust CLI plus a tiny per-tool shim. No JVM, no
   runtime, no service.
 
 ## Install
+
+Windows only, on x64 — arm64 builds ship best-effort and a release may not
+carry one. There is no Linux or macOS build: the CLI is written against the
+Windows registry, junctions and `.exe` shims, and does not compile elsewhere.
 
 **PowerShell one-liner** — no admin, no reboot:
 
@@ -118,12 +127,12 @@ version (`21`, `21.0.5`), which uses the default vendor from your config
 | `jdk use <selector>` | Set the **global** default (retargets the `current` junction) |
 | `jdk pin <selector>` | Pin the current directory (writes `.jdkrc`) |
 | `jdk list` | List installed JDKs |
-| `jdk available [filter] [--latest] [--ea]` | List JDKs you can install (filter by vendor, version, or both; `--ea` includes early-access builds) |
+| `jdk available [filter] [--latest] [--ea]` | List JDKs you can install (filter by vendor, version, or both; `--latest` keeps one build per major line, `--ea` includes early-access builds) |
 | `jdk current` | Show which Java this directory resolves to, and why |
 | `jdk which [tool]` | Print the resolved path of a tool (`java` by default) — handy for IDE setup |
 | `jdk setup [--yes]` | One-time Windows prep: `JAVA_HOME`, `PATH`, shims (idempotent) |
 | `jdk doctor` | Health-check the store, junction, registry and `PATH`; explain every problem |
-| `jdk update [--force]` | Update jdk itself to the latest release (checksum-verified; `--force` reinstalls the current one) |
+| `jdk update [--force]` | Update jdk itself to the latest release (checksum-verified; `--force` reinstalls that latest release even when it is the one you already run) |
 
 ## How a version is chosen
 
@@ -135,12 +144,13 @@ these files, trying them in this order:
 .jdkrc  →  .sdkmanrc  →  .java-version  →  .tool-versions
 ```
 
-The first file that names a Java version wins. If no directory up the tree pins
-one, the shim falls back to your **global** JDK. This is why cloning a
-repository that already has a `.sdkmanrc` (`java=21.0.5-tem`) or an asdf
-`.tool-versions` (`java temurin-21`) works with no extra steps — the SDKMAN
-vendor suffixes (`tem`, `zulu`, `amzn`, `librca`, `ms`, `graalce`, …) are
-understood natively.
+The first of those files that names a Java version wins, and the walk ends at
+that directory even when none of its files names one — levels never mix. With
+no pin file anywhere up the tree, the shim falls back to your **global** JDK.
+This is why cloning a repository that already has a `.sdkmanrc`
+(`java=21.0.5-tem`) or an asdf `.tool-versions` (`java temurin-21`) works with
+no extra steps — the SDKMAN vendor suffixes (`tem`, `zulu`, `amzn`, `librca`,
+`ms`, `graalce`, …) are understood natively.
 
 > [!IMPORTANT]
 > **`jdk use` is not SDKMAN's `use`.** In SDKMAN, `sdk use` changes only the
@@ -154,10 +164,16 @@ understood natively.
 
 `jdk setup` writes `JAVA_HOME` **once**, to `%USERPROFILE%\.jdk\current` — a
 directory junction — and that value never changes. `jdk use` moves the junction
-to point at a different JDK. Because the path stays the same, every console and
-IDE you already have open resolves the new JDK on its next `java` call: no
-restart, no logoff. New consoles see the updated `PATH` and `JAVA_HOME`
-immediately too, because setup broadcasts a `WM_SETTINGCHANGE`.
+to point at a different JDK. Because the path stays the same, every console you
+already have open resolves the new JDK on its next `java` call: no restart, no
+logoff. New consoles see the updated `PATH` and `JAVA_HOME` immediately too,
+because setup broadcasts a `WM_SETTINGCHANGE`.
+
+A long-running process is only as current as the moment it last looked. An IDE
+that stored the JDK path in its project settings keeps using that path, and a
+Gradle or Kotlin daemon keeps the JVM it started with — point the IDE at
+`%USERPROFILE%\.jdk\current` once, and restart it (and the daemons) after a
+switch.
 
 ### Auto-install
 
@@ -185,8 +201,22 @@ Both keys are optional; the values above are the defaults.
 | Variable | Effect |
 | --- | --- |
 | `JDK_ROOT` | Store location (default `%USERPROFILE%\.jdk`) |
-| `JDK_INDEX` | Override the metadata index base URL |
 | `JDK_CAFILE` / `JDK_CAPATH` | Extra CA certificate file / directory for TLS (corporate proxies) |
+| `JDK_INDEX` | Base URL of the catalog index — a local mirror, or a test server |
+| `JDK_FOOJAY` | Base URL of the foojay Disco API used as the live fallback |
+| `JDK_RELEASES` | Base URL `jdk update` reads this project's own releases from. **Loopback only** — see below |
+
+The three URL overrides exist so a mirror or a hermetic test server can stand
+in for the real host; a loopback URL is the only case where plain `http://` is
+accepted, and every other request is HTTPS-only on the first hop and on every
+redirect. `JDK_RELEASES` is further restricted to loopback: it feeds the one
+code path that replaces the binary every shim invokes, and its checksum
+sidecar comes from the same host as the download, so an external value is
+refused with a message naming the variable rather than silently obeyed.
+
+Two more variables — `JDK_ENV_KEY` and `JDK_MACHINE_ENV_KEY` — redirect the
+registry writes to a disposable `HKCU` subkey. They exist for this project's
+own hermetic tests and are not part of the supported surface.
 
 ## Troubleshooting
 
@@ -198,11 +228,21 @@ informative only, never a failure.
 
 ## Roadmap
 
-Planned, but **not** in v0.1:
+Not built yet, roughly in the order they are wanted:
 
-- a `javaw` GUI shim (windowed Java apps without a console)
+- an uninstaller — today nothing undoes `jdk setup`
 - winget and scoop packaging
-- Maven `toolchains.xml` integration
+- more tools in the shim set (`jlink`, `jpackage`, `javap`, `jcmd`, …)
+
+Considered and parked until someone asks for them: a `javaw` GUI shim, Maven
+`toolchains.xml` integration, and Linux/macOS support.
+
+## The crates
+
+`jdk` is the product. `jdk-core` and `jdk-resolve` are on crates.io only
+because `cargo install jdk` needs a published dependency for everything it
+builds — they are internal API, they change with the CLI, and nothing about
+them is a stability promise. Depend on them at your own risk.
 
 ## License
 

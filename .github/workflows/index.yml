@@ -47,7 +47,7 @@ jobs:
 
       - name: generate and validate the index
         run: >
-          cargo run --release -p jdk-index-gen --
+          cargo run --locked --release -p jdk-index-gen --
           --out staged
           --compare-to https://raw.githubusercontent.com/isacgalvao/jdk-index/main
 
