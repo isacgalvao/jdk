@@ -92,9 +92,20 @@ jobs:
       - name: audit dependencies for known vulnerabilities
         run: cargo audit
 
+      # Pre-flight for the crates.io publish at the end of the run: packages the
+      # three crates and runs their verification builds while failing is still
+      # free. An upload cannot be taken back — a jdk-core that fails to package
+      # after jdk-resolve is already on crates.io leaves the version half
+      # published, and the only way out is to burn the number.
+      #
+      # Before the artifacts are assembled on purpose: `cargo publish` refuses a
+      # dirty working tree, and `dist/` is not ignored.
+      - name: publish dry-run (same command the publish job runs)
+        run: cargo publish --dry-run --locked -p jdk-resolve -p jdk-core -p jdk
+
       # --locked on every build: cargo audit judged the committed Cargo.lock a
       # step ago, and a build free to resolve something newer would embed an
-      # SBOM - and sign a binary - for a dependency graph no gate ever saw.
+      # SBOM — and sign a binary — for a dependency graph no gate ever saw.
       - name: build jdk.exe (x64, SBOM embedded)
         run: cargo auditable build --locked --release -p jdk --bin jdk
 
@@ -241,12 +252,19 @@ jobs:
           gh release create $env:GITHUB_REF_NAME --title "jdk $env:GITHUB_REF_NAME" --notes $notes @assets
 
   # After a tag's release build/scan and GitHub release succeed, publish the
-  # three crates.io crates in dependency order. Windows-native so the
-  # `cargo publish` verification build (jdk-core/jdk are Windows-only) matches
-  # the manual publish. cargo waits for each crate to be indexed before the
-  # next resolves. jdk-index-gen and test-support are `publish = false`;
-  # jdk-shim is not a published crate. Requires the CARGO_REGISTRY_TOKEN
-  # secret (a crates.io API token) — absent it, this job fails.
+  # three crates.io crates. One invocation for all three: cargo packages and
+  # verifies every crate before uploading any of them, orders them by dependency
+  # and waits for each to be indexed — so the window where a later failure can
+  # leave the version half published is as narrow as cargo can make it. The dry
+  # run in the release job has already walked this exact path.
+  #
+  # Windows-native so the verification build (jdk-core/jdk are Windows-only)
+  # matches the manual publish. The set is named explicitly rather than taken
+  # from `--workspace`: jdk-index-gen and test-support are `publish = false` and
+  # jdk-shim is not published, and naming them here means a new crate cannot
+  # reach crates.io by forgetting a manifest key. Requires the
+  # CARGO_REGISTRY_TOKEN secret (a crates.io API token) — absent it, this job
+  # fails.
   publish-crates:
     needs: release
     if: github.event_name == 'push' && github.ref_type == 'tag'
@@ -258,11 +276,6 @@ jobs:
       # first cargo call.
 
       - name: publish to crates.io (jdk-resolve -> jdk-core -> jdk)
-        shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          set -euo pipefail
-          cargo publish --locked -p jdk-resolve
-          cargo publish --locked -p jdk-core
-          cargo publish --locked -p jdk
+        run: cargo publish --locked -p jdk-resolve -p jdk-core -p jdk
