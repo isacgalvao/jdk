@@ -679,6 +679,12 @@ fn foojay_without_sha256_is_refused() {
 /// and `latest` belongs to the early-access query alone. The single combined
 /// `ea,ga` query it replaces carried the cap over the GA builds too, so the
 /// flag listed FEWER stable versions than the bare listing.
+///
+/// "Fewer than the bare listing" is a statement about two listings, so both are
+/// taken here and compared. Inspecting only the widened one — or only the URLs
+/// the query builder returns — cannot see the regression: a build that folds
+/// the two queries back into one capped `ea,ga` still answers with early
+/// access present, just with the stable builds quietly thinned out.
 #[test]
 fn the_ea_listing_adds_early_access_without_capping_the_ga_half() {
     let temp = TempDir::new().unwrap();
@@ -701,24 +707,45 @@ fn the_ea_listing_adds_early_access_without_capping_the_ga_half() {
     });
 
     let catalog = Catalog::with_urls(temp.path(), &dead_url(), server.url());
-    let listing = catalog
-        .available(&http(), "temurin", os, arch, true)
-        .unwrap();
+    let versions = |include_ea| {
+        catalog
+            .available(&http(), "temurin", os, arch, include_ea)
+            .unwrap()
+            .iter()
+            .map(|entry| entry.version.clone())
+            .collect::<Vec<String>>()
+    };
+    let bare = versions(false);
+    let widened = versions(true);
 
-    let versions: Vec<&str> = listing.iter().map(|entry| entry.version.as_str()).collect();
-    assert_eq!(versions, ["21.0.4", "21.0.5", "27-ea+31"]);
-
-    let requests = server.requests_to("/packages");
-    assert_eq!(requests.len(), 2);
-    assert!(
-        !requests[0].path.contains("latest="),
-        "the GA query is never capped: {}",
-        requests[0].path
+    assert_eq!(bare, ["21.0.4", "21.0.5"]);
+    assert_eq!(widened, ["21.0.4", "21.0.5", "27-ea+31"]);
+    // The property the flag has to hold, stated over the two listings rather
+    // than inferred from either one: everything the bare listing showed is
+    // still there.
+    assert_eq!(
+        widened[..bare.len()],
+        bare[..],
+        "`--ea` removed stable builds the bare listing had"
     );
+
+    // Three queries: one for the bare listing, two for the widened one — so
+    // folding them back into a single `ea,ga` request fails here as well.
+    let requests = server.requests_to("/packages");
+    assert_eq!(requests.len(), 3, "{requests:#?}");
+    for capped in [&requests[0], &requests[1]] {
+        assert!(
+            !capped.path.contains("latest="),
+            "the GA query is never capped: {}",
+            capped.path
+        );
+    }
     assert!(
-        requests[1].path.contains("latest=available"),
+        requests[2]
+            .path
+            .contains("release_status=ea&latest=available"),
         "the EA query is capped to each line's latest: {}",
-        requests[1].path
+        requests[2].path
     );
 }
 
