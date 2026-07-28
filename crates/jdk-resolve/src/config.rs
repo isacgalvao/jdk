@@ -3,16 +3,16 @@
 //! Deliberately NOT a TOML library (this crate is the shim's std-only
 //! firewall). The file is a flat SUBSET of TOML that the CLI — its only
 //! writer (`jdk-core::config`) — guarantees: `key = "string"` or
-//! `key = true|false` lines, `#` comments, blank lines. No tables, arrays,
-//! escapes or multi-line values. The reader tolerates a UTF-8 BOM and CRLF,
-//! ignores unknown keys (a newer jdk may know more), and rejects anything
-//! outside the subset with an error naming the line.
+//! `key = true|false` lines, `#` comments outside quotes, blank lines. No
+//! tables, arrays, escapes or multi-line values. The reader tolerates a UTF-8
+//! BOM and CRLF, ignores unknown keys (a newer jdk may know more), and rejects
+//! anything outside the subset with an error naming the line.
 //!
 //! v0.1 keys: `vendor` (default vendor for versions without one) and
 //! `auto-install` (shim behavior for a pinned-but-missing JDK).
 
 use crate::selector::normalize_vendor;
-use crate::text::meaningful_lines;
+use crate::text::config_lines;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -102,7 +102,7 @@ pub fn load(root: &Path) -> Result<Config, ConfigError> {
 
 pub fn parse(text: &str) -> Result<Config, ConfigError> {
     let mut config = Config::default();
-    for line in meaningful_lines(text) {
+    for line in config_lines(text) {
         let Some((key, value)) = line.split_once('=') else {
             return Err(ConfigError::parse(line, "expected `key = \"value\"`"));
         };
@@ -217,6 +217,14 @@ mod tests {
     fn ignores_unknown_keys_inside_the_subset() {
         let config = parse("future-key = \"x\"\nflag = true\nvendor = \"zulu\"\n").unwrap();
         assert_eq!(config.vendor, "zulu");
+    }
+
+    #[test]
+    fn a_hash_inside_quotes_is_data_not_a_comment() {
+        // The regression: one `#` in the backed-up JAVA_HOME used to truncate
+        // the line, drop the closing quote and fail the file for the shim.
+        let text = "java-home-before = \"C:\\Tools\\jdk#17\"\nvendor = \"zulu\"\n";
+        assert_eq!(parse(text).unwrap().vendor, "zulu");
     }
 
     #[test]

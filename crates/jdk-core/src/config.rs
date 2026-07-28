@@ -17,6 +17,13 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+/// Characters no value may carry into `config.toml`. A quote or a line break
+/// ends the value outright; `#` is legal in a Windows path and the current
+/// reader keeps it, but a shim copy deployed before that fix cuts the line
+/// there and rejects the whole file — so a mixed-version store stays readable
+/// only if we never write one.
+const UNWRITABLE: [char; 4] = ['"', '#', '\n', '\r'];
+
 /// The JAVA_HOME value `jdk setup` replaced: exact text plus whether it was
 /// `REG_EXPAND_SZ` (an undo must restore the registry type too).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,11 +39,11 @@ pub fn write(root: &Path, config: &Config) -> Result<()> {
     emit(root, config, java_home_before(root)?.as_ref())
 }
 
-/// Records the pre-setup JAVA_HOME alongside `config`. Refuses a value the
-/// flat config subset cannot represent (quotes, line breaks) — the caller
-/// surfaces the old value instead of silently losing it.
+/// Records the pre-setup JAVA_HOME alongside `config`. Refuses a value
+/// `config.toml` cannot carry (see `UNWRITABLE`) — the caller surfaces the
+/// old value instead of silently losing it.
 pub fn save_java_home_before(root: &Path, config: &Config, backup: &JavaHomeBefore) -> Result<()> {
-    if backup.value.contains(['"', '\n', '\r']) {
+    if backup.value.contains(UNWRITABLE) {
         return Err(Error::Env(format!(
             "previous JAVA_HOME {:?} contains characters config.toml cannot hold",
             backup.value
@@ -82,7 +89,7 @@ pub fn java_home_before(root: &Path) -> Result<Option<JavaHomeBefore>> {
 }
 
 fn emit(root: &Path, config: &Config, backup: Option<&JavaHomeBefore>) -> Result<()> {
-    if config.vendor.is_empty() || config.vendor.contains('"') {
+    if config.vendor.is_empty() || config.vendor.contains(UNWRITABLE) {
         return Err(Error::Catalog(format!(
             "vendor {:?} cannot be written to config.toml",
             config.vendor
@@ -191,11 +198,23 @@ mod tests {
     #[test]
     fn refuses_a_backup_the_subset_cannot_hold() {
         let temp = TempDir::new().unwrap();
-        let hostile = JavaHomeBefore {
-            value: "C:\\evil\"quote".to_string(),
-            expandable: false,
-        };
-        assert!(save_java_home_before(temp.path(), &Config::default(), &hostile).is_err());
-        assert_eq!(java_home_before(temp.path()).unwrap(), None);
+        for hostile in [
+            "C:\\evil\"quote",
+            // Readable by the current reader, but a shim deployed before the
+            // quote-aware scanner cuts the line at the `#` and fails the file.
+            "C:\\Tools\\jdk#17",
+            "C:\\evil\nnewline",
+            "C:\\evil\rreturn",
+        ] {
+            let backup = JavaHomeBefore {
+                value: hostile.to_string(),
+                expandable: false,
+            };
+            assert!(
+                save_java_home_before(temp.path(), &Config::default(), &backup).is_err(),
+                "{hostile:?} must not reach config.toml"
+            );
+            assert_eq!(java_home_before(temp.path()).unwrap(), None);
+        }
     }
 }
