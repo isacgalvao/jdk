@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Installs jdk, the Windows-first Java version manager.
+Installs jdk, the Java version manager for Windows.
 
 .DESCRIPTION
 Downloads the release zip for this machine's architecture, verifies its
@@ -139,9 +139,10 @@ try {
 
     Assert-Checksum $zip
 
-    # Future extension (plan decision 12): verify GitHub build provenance
-    # here (`gh attestation verify`, warn-only when gh is absent) once the
-    # release pipeline attests its artifacts.
+    # The sidecar above is only as trustworthy as the release that carries
+    # it: both come from the same URL. The pipeline already signs SHA256SUMS
+    # (keyless cosign) and attests build provenance, but nothing here verifies
+    # either — anchoring this download in that evidence is item SEC-01.
 
     Expand-Archive -Path $zip -DestinationPath $extractDir -Force
     $jdkExe = Get-ChildItem -Path $extractDir -Recurse -Filter 'jdk.exe' | Select-Object -First 1
