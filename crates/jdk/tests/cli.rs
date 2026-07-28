@@ -878,6 +878,73 @@ fn the_shim_install_path_refuses_proprietary_terms_instead_of_accepting_them() {
     assert_eq!(server.hits("/dl/25.0.2.zip"), 0);
 }
 
+/// The config route to the same consent, end to end: a real `config.toml`, the
+/// real binary reading it, a real download gated on it. The key is parsed in
+/// jdk-resolve and weighed in `install`'s unit tests, but nothing pinned the
+/// wire between them, and this is legal consent — a regression that stopped
+/// reading the key would turn every CI install into a refusal, and one that
+/// read it too eagerly would accept Oracle's terms for someone who never said
+/// yes. Neither announces itself.
+///
+/// One world, three runs, the config line the only thing that moves: no
+/// console appears between them, so nothing but the key can explain the
+/// different answers.
+#[test]
+fn the_config_key_consents_to_proprietary_terms_and_still_not_for_the_shim() {
+    let server = Server::start();
+    let mut oracle = served_package(&server, "25.0.2");
+    oracle.vendor = "oracle".to_string();
+    serve_catalog(&server, std::slice::from_ref(&oracle));
+    let world = World::at(server.url().to_string());
+
+    // Explicitly withheld, and no TTY to ask on: refuse before any download.
+    world.config("accept-license = false\n");
+    let output = world.jdk(&["install", "oracle@25"]);
+    assert_eq!(
+        output.status.code(),
+        Some(exit::CONFIG),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(server.hits("/dl/25.0.2.zip"), 0);
+
+    world.config("accept-license = true\n");
+
+    // Still refused on the shim path, where the key deliberately does not
+    // reach: a `.jdkrc` comes from a repository, and standing consent is not
+    // consent for someone else's project to enter a license agreement.
+    let output = world.jdk(&["install", "oracle@25", "--from-shim"]);
+    assert_eq!(
+        output.status.code(),
+        Some(exit::CONFIG),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(
+        server.hits("/dl/25.0.2.zip"),
+        0,
+        "no download from the shim"
+    );
+
+    // The command the key was written for: unattended, no prompt, installed.
+    let output = world.jdk(&["install", "oracle@25"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(world.candidate("oracle@25.0.2").exists());
+    let granted = stderr(&output);
+    assert!(
+        granted.contains("accept-license = true in config.toml"),
+        "the grant is named so it can be withdrawn: {granted}"
+    );
+    // And consent recorded on the wire, as the flag route does: the cookie is
+    // the acceptance, so it may only ride once the key has been honored.
+    let requests = server.requests_to("/dl/25.0.2.zip");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].header("cookie"),
+        Some("oraclelicense=accept-securebackup-cookie")
+    );
+}
+
 #[test]
 fn install_with_no_reachable_catalog_reports_both_causes() {
     let world = World::offline();

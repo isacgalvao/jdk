@@ -70,9 +70,16 @@ fn replace_existing(from: &Path, to: &Path) -> io::Result<()> {
 ///
 /// Should the final rename fail AFTER the aside emptied `dest`, the aside is
 /// rolled back onto `dest` (best-effort — the original error is reported
-/// either way), so the destination never silently vanishes. That failure has
-/// no deterministic simulation without fault injection, so the rollback is
-/// documented here rather than pinned by a test.
+/// either way), so the destination never silently vanishes. No test pins that
+/// rollback, and the reason is a property of the algorithm rather than a gap in
+/// the suite: moving `dest` aside is what takes `dest` OUT OF THE WAY, so every
+/// fault that lived in the destination — a directory sitting on the name, a
+/// read-only occupant — is consumed by that step, and the retry then succeeds.
+/// What is left has to live in `staging` or in the parent directory, and on
+/// Unix, where `replace_existing` is a plain `fs::rename`, no shape of the
+/// filesystem yields the `PermissionDenied` this arm is guarded by: only a DAC
+/// refusal does, which a test running as root never meets. Reaching the
+/// rollback therefore takes fault injection, not a cleverer fixture.
 pub fn replace_running(staging: &Path, dest: &Path) -> Result<()> {
     match replace_existing(staging, dest) {
         Ok(()) => Ok(()),

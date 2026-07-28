@@ -52,6 +52,12 @@ struct Details {
 /// query to one build per line, so a single `ea,ga` query with the cap would
 /// take the GA listing down with it — `--ea` would then show FEWER stable
 /// builds than the bare listing. A flag that adds must not remove.
+///
+/// That last sentence is a claim about the two listings, not about either URL,
+/// so no unit test over [`packages_url`] can carry it: it is pinned by
+/// `the_ea_listing_adds_early_access_without_capping_the_ga_half` in
+/// `tests/hermetic.rs`, which takes both listings off a loopback server and
+/// compares them.
 pub fn available(
     http: &Http,
     base_url: &str,
@@ -218,23 +224,6 @@ mod tests {
             !url.contains("latest="),
             "the live fallback never caps: {url}"
         );
-    }
-
-    /// The listing's two queries: the cap belongs to the EA one alone, so
-    /// asking for early access cannot shrink the GA half of the listing.
-    #[test]
-    fn the_listing_caps_early_access_without_capping_ga() {
-        let ga = packages_url(DEFAULT_URL, "temurin", "windows", "x64", "ga", None);
-        let ea = packages_url(
-            DEFAULT_URL,
-            "temurin",
-            "windows",
-            "x64",
-            "ea",
-            Some("available"),
-        );
-        assert!(!ga.contains("latest="), "{ga}");
-        assert!(ea.contains("release_status=ea&latest=available"), "{ea}");
     }
 
     #[test]

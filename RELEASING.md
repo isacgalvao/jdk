@@ -32,19 +32,27 @@ release, run a dry-run first and confirm the artifacts look right:
 
 `jdk` is a single-version workspace: every crate inherits `version.workspace`,
 and the internal dependencies resolve through `[workspace.dependencies]`, so the
-version lives in exactly one place.
+version lives in exactly one file — the root `Cargo.toml`, in two spots. The
+crate manifests are not touched at all: they carry `version.workspace = true`
+and `jdk-core.workspace = true`, with no version of their own to bump.
 
 1. Bump `[workspace.package] version` in the root `Cargo.toml`.
-2. Bump the **three internal pins** that must echo that version:
-   - `crates/jdk-core/Cargo.toml` → `jdk-resolve`
-   - `crates/jdk/Cargo.toml` → `jdk-core`
-   - `crates/jdk/Cargo.toml` → `jdk-resolve`
+2. Bump the **same version** in the `[workspace.dependencies]` requirements just
+   below it — `jdk-core` and `jdk-resolve` each carry a `version = "X.Y.Z"`
+   beside their `path`. Cargo has no way to inherit the package version into a
+   dependency requirement, which is why it is written twice.
 
-   (Unversioned path deps — `test-support`, the `jdk-index-gen` deps — are not
-   pinned and need no change.)
+   Forgetting the second is **not** a silent drift: the path dependency stops
+   satisfying the requirement, so `cargo check` fails to resolve and says so.
+   That is a stronger gate than a version-checking script, which is why there is
+   no longer one. `test-support` is never published and carries no requirement,
+   so it needs no change.
 3. Regenerate the lockfile: `cargo check` (the `Cargo.lock` is committed).
 4. If the MSRV moved, update `rust-version` **and** the README `MSRV-x.y` badge —
-   they must match.
+   they must match. CI's `msrv` job reads `rust-version` straight from the
+   manifest and runs `cargo check` on that exact toolchain, so a claim the code
+   no longer supports fails there. The badge is prose in a `<img>` URL that no
+   job reads: it is the half only a human catches.
 
 **Semver:** a new vendor/feature that stays backward-compatible is a **minor**
 bump (that is what `0.1.0 → 0.2.0` was); a breaking change to the CLI or config
