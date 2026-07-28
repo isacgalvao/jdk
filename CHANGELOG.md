@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-07-26
+## [0.5.0] - 2026-07-28
 
 A correctness release. Nothing new to do — the things that were already there
 now work, and two of them could leave an installation unusable.
@@ -30,6 +30,13 @@ now work, and two of them could leave an installation unusable.
 - `jdk available --ea` stopped removing general-availability builds — from the
   live catalog, where the early-access query capped both, and from `--latest`,
   where every line that had a GA release hid its early-access build.
+- Listing and installing early access agree on what exists. `jdk available`
+  implies `--ea` when the filter itself asks for early access — a pre-release
+  selector like `temurin@27-ea`, or an explicit version that only exists as an
+  early-access build — matching the selectors `jdk install` already resolves.
+  And an empty result with early access in play now explains itself, naming
+  the vendor — or the whole catalog, when no vendor is named — as publishing
+  no early-access builds for the platform.
 - A failing early-access query no longer vetoes the whole index publish. One
   vendor's pre-release outage used to take general availability down with it.
 
@@ -74,7 +81,7 @@ now work, and two of them could leave an installation unusable.
 
 ### Added
 
-- `jdk update`: self-update to the latest GitHub release — checksum-verified download, in-process swap of the running `jdk.exe` (the old copy is moved aside and swept on the next run) and shim refresh; `--force` reinstalls the current version.
+- `jdk update`: self-update to the latest GitHub release — checksum-verified download, in-process swap of the running `jdk.exe` (the old copy is moved aside and swept on the next run) and shim refresh; `--force` reinstalls that latest release even when it is the one you already run.
 - `jdk doctor` now notes when a newer jdk release is available and points at `jdk update`; like the other network probes, being offline is informative and never a failure.
 
 ## [0.3.0] - 2026-07-21
@@ -82,8 +89,8 @@ now work, and two of them could leave an installation unusable.
 ### Added
 
 - Early-access builds in the catalog: `jdk available --ea` lists pre-release lines alongside GA (hidden by default), indexed and capped to the latest build of each line so the listing never drowns in nightlies.
-- A bare pre-release selector now tracks its moving daily build — `jdk install temurin@27-ea` matches the current `27-ea+N` — while a pinned build like `27-ea+30` still resolves exactly.
-- Exact pre-release builds the index no longer carries are resolved live from the foojay Disco API; `jdk install` reports when a build came from foojay instead of the index.
+- A bare pre-release selector now tracks its moving daily build — `jdk install temurin@27-ea` matches the current `27-ea+N` — and a pinned build like `27-ea+30` resolves exactly while the index still carries it.
+- Exact pre-release builds the index no longer carries are resolved live from the foojay Disco API when it publishes an inline sha256 for the vendor — only temurin and zulu do today; every other vendor's expired builds are refused rather than downloaded unverified; `jdk install` reports when a build came from foojay instead of the index.
 
 ### Security
 
@@ -94,7 +101,7 @@ now work, and two of them could leave an installation unusable.
 
 ### Added
 
-- Oracle JDK as an installable vendor — `jdk install oracle@25` — sourced from the foojay Disco API with the same mandatory SHA-256 verification as every other vendor.
+- Oracle JDK as a best-effort vendor — `jdk install oracle@25` — indexed only under its immutable `/archive/` URLs; a bad Oracle day drops it from the daily index with a warning instead of failing the publish. A SHA-256 stays mandatory on every published package, but foojay carries none inline for Oracle: the generator resolves it from Oracle's checksum URI when offered, otherwise pinning the hash it first saw (trust-on-first-use).
 - A license notice shown before download for the vendors under proprietary terms: Oracle JDK (NFTC) and Oracle GraalVM (GFTC).
 
 ## [0.1.0] - 2026-07-18
