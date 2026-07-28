@@ -49,9 +49,15 @@ adiados estão registrados em **Parqueado** com a razão.
 | **v0.5.0** | Correção | Nenhum defeito 🔴/🟠 aberto; pipeline com gates; docs sem afirmação falsa |
 | **v0.6.0** | Confiança e reversibilidade | Update com verificação ancorada; desinstalador; swap robusto |
 | **v0.7.0** | Distribuição e alcance | winget/scoop; `install.ps1` em CI; conjunto de ferramentas completo |
-| **v1.0.0** | Estabilização | Contrato de índice e CLI congelados; sem dívida 🟠; e2e cobrindo os três caminhos de instalação |
 | **Contínuo** | — | Entra junto com qualquer trabalho que toque a área |
+| **Sem versão-alvo** | — | Depende de decisão de produto ainda não tomada |
 | **Parqueado** | — | Decisão consciente de não fazer agora |
+
+> **Não há v1.0.0 planejada.** O produto ainda não tem o conjunto de features
+> que o mantenedor quer nele, e estabilizar contrato antes disso trocaria
+> liberdade de mudança por uma promessa que não se quer fazer ainda. Os itens
+> que só fazem sentido junto de um congelamento de contrato estão em **Sem
+> versão-alvo**, com o gatilho anotado — não numa release fantasma.
 
 ### Nota sobre o rótulo da próxima versão
 
@@ -568,6 +574,14 @@ mais que qualquer feature desta lista.
 
 ---
 
+### `CI-20` · e2e cobrindo os três caminhos de instalação
+**🟡 Média · S · — · v0.7.0 · depende de FEAT-02 e CI-06**
+
+One-liner, zip da release e winget, todos em runner limpo. Só faz sentido depois
+que `FEAT-02` existir; até lá, `CI-06` cobre o caminho primário.
+
+---
+
 # Contínuo — entra junto com o trabalho da área
 
 ## Dívida técnica
@@ -691,8 +705,9 @@ clássico.
 — overflow-proof, ordem total válida, consistente com `Eq`. A correção de raiz
 seria `pre_release: Option<Vec<PreId>>` semver-like, com pre-release ordenando
 abaixo da release, eliminando as correções `is_stable`/`rank`/`eligible_global`
-espalhadas. **Grande e arriscada — só faz sentido antes de congelar o contrato
-na v1.0.0.**
+espalhadas. **Grande e arriscada — muda ordenação observável, então é sem
+versão-alvo: fazer enquanto ainda não há compromisso de estabilidade, e não
+depois.**
 
 Efeito colateral não testado: reordena silenciosamente as strings JVMCI do
 GraalVM.
@@ -725,12 +740,16 @@ presentes ou triviais cobririam.
 ---
 
 ### `DEBT-12` · Generalidade especulativa no contrato do índice
-**⚪ Baixa · — · ○ · Parqueado até v1.0.0**
+**⚪ Baixa · — · ○ · sem versão-alvo**
 
 Campos `os` e `tool` que só têm um valor cada; `ExtractReport`
 (`extract.rs:19-24`) é struct completa cujos dois chamadores de produção
-descartam o retorno. Defensáveis por serem contrato de wire — decidir no
-congelamento do contrato.
+descartam o retorno. Os do índice são defensáveis por serem contrato de wire e
+custarem quase nada; o `ExtractReport` é dívida pura e pode cair a qualquer
+momento.
+
+Enquanto não houver promessa de estabilidade, remover campo do índice é barato —
+gerador e cliente sobem juntos. Depois, deixa de ser. Ver `IDX-06`.
 
 ---
 
@@ -741,6 +760,21 @@ congelamento do contrato.
 estético: `BUG-04` e `DEBT-01` são exatamente casos em que a prosa **garante o
 que o código não entrega**, e a prosa é load-bearing para quem lê. Ao corrigir
 esses dois, alinhar doc e comportamento.
+
+---
+
+### `DOC-04` · Referências a um plano ausente em crates publicados
+**⚪ Baixa · S · ✓ · Contínuo**
+
+**38 referências** a um documento que nunca existiu no repositório (`M1`–`M6`,
+`decision 12`, `anti-model 3`) em doc comments de `jdk`, `jdk-core` e
+`jdk-resolve` — renderizadas no docs.rs como ruído indecifrável para quem não
+participou do planejamento. Substituir pela explicação em si, ou publicar o
+documento referenciado.
+
+Corrigir oportunisticamente: cada item que tocar um desses arquivos limpa as
+referências que encontrar. Combina bem com `CI-18`, que desbloqueia as páginas
+do docs.rs — hoje quebradas, então o ruído sequer é visível.
 
 ---
 
@@ -1099,15 +1133,37 @@ portáteis e podiam ser gateados por função.
 
 ---
 
-# v1.0.0 — Estabilização
+# Sem versão-alvo
 
-| ID | Item |
-|---|---|
-| `DEBT-09` | Remodelar `pre_release` semver-like — grande e arriscado, só antes de congelar o contrato |
-| `DEBT-12` | Decidir sobre campos especulativos do índice (`os`, `tool`, `ExtractReport`) |
-| `IDX-06` | Congelar o schema do índice com versionamento explícito de contrato |
-| `DOC-04` | Substituir as **38 referências** a um plano ausente (`M1`–`M6`, `decision 12`, `anti-model 3`) em doc comments de crates publicados — hoje renderizadas no docs.rs como ruído indecifrável. Ou publicar o documento referenciado |
-| `CI-20` | e2e cobrindo os três caminhos de instalação (one-liner, zip, winget) em runner limpo |
+Itens cujo gatilho é uma decisão de produto que ainda não foi tomada. Ficam
+visíveis aqui em vez de numa release que não existe, para que a decisão seja
+consciente quando chegar — e não descoberta tarde.
+
+### `IDX-06` · Política de evolução do schema do índice
+**🟡 Média · S · ✓ · gatilho: decidir estabilizar o contrato**
+
+`index.json` já carrega `"version": 1`, mas não existe política escrita sobre o
+que constitui mudança compatível, como o cliente reage a uma versão maior que a
+que conhece, nem por quanto tempo uma versão antiga continua sendo publicada. O
+schema normativo vive num comentário em `jdk-core/src/index.rs`, que se declara
+"the index contract".
+
+Enquanto não houver compromisso de estabilidade, isto é barato de adiar: o
+gerador e o cliente sobem juntos. Passa a importar no momento em que existirem
+instalações antigas que não acompanham o gerador — que é exatamente o efeito
+que `FEAT-02` (winget) produz ao ampliar a base.
+
+**Gatilho.** Primeira release em que se queira prometer compatibilidade, ou
+quando a base instalada deixar de acompanhar o índice.
+
+---
+
+### `DEBT-09` (remodelagem de `pre_release`) e `DEBT-12` (campos especulativos)
+
+Descritos em **Contínuo · Dívida técnica**. Ambos são reversíveis enquanto o
+contrato não estiver congelado, e caros de fazer sem essa decisão — `DEBT-09`
+muda ordenação observável, `DEBT-12` remove campos que terceiros poderiam já
+estar lendo. Manter listados, não agendados.
 
 ---
 
