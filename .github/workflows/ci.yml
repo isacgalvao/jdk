@@ -20,10 +20,14 @@ jobs:
       # No toolchain action: rust-toolchain.toml pins the channel, components
       # (clippy, rustfmt) and target, and rustup auto-installs it on the first
       # cargo call below.
+      #
+      # --locked everywhere: the committed Cargo.lock is what deny, audit and
+      # the release build all judge, so nothing in CI may quietly resolve a
+      # different graph than the one that passed the gates.
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo build --profile release-shim -p jdk-shim --bin jdk-shim
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo build --locked --profile release-shim -p jdk-shim --bin jdk-shim
       - name: shim size gate (< 1 MiB)
         shell: pwsh
         run: |
@@ -51,7 +55,7 @@ jobs:
           # Libraries and binaries only. Dev-dependencies are not part of what a
           # consumer builds, and holding them to the MSRV would let a benchmark
           # crate dictate the toolchain the product claims to support.
-          cargo +$msrv check --workspace --locked
+          cargo +$msrv check --locked --workspace
 
   deny:
     runs-on: ubuntu-latest
@@ -60,4 +64,4 @@ jobs:
       - uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9  # v2
         with:
           tool: cargo-deny@0.20.2
-      - run: cargo deny check
+      - run: cargo deny --locked check

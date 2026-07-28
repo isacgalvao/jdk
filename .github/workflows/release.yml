@@ -75,11 +75,14 @@ jobs:
       - name: audit dependencies for known vulnerabilities
         run: cargo audit
 
+      # --locked on every build: cargo audit judged the committed Cargo.lock a
+      # step ago, and a build free to resolve something newer would embed an
+      # SBOM - and sign a binary - for a dependency graph no gate ever saw.
       - name: build jdk.exe (x64, SBOM embedded)
-        run: cargo auditable build --release -p jdk --bin jdk
+        run: cargo auditable build --locked --release -p jdk --bin jdk
 
       - name: build jdk-shim.exe (x64, size profile)
-        run: cargo build --profile release-shim -p jdk-shim --bin jdk-shim
+        run: cargo build --locked --profile release-shim -p jdk-shim --bin jdk-shim
 
       - name: shim size gate (< 1 MiB)
         run: |
@@ -91,8 +94,8 @@ jobs:
         id: arm64
         continue-on-error: true
         run: |
-          cargo auditable build --release -p jdk --bin jdk --target aarch64-pc-windows-msvc
-          cargo build --profile release-shim -p jdk-shim --bin jdk-shim --target aarch64-pc-windows-msvc
+          cargo auditable build --locked --release -p jdk --bin jdk --target aarch64-pc-windows-msvc
+          cargo build --locked --profile release-shim -p jdk-shim --bin jdk-shim --target aarch64-pc-windows-msvc
 
       # Each zip carries jdk.exe, jdk-shim.exe side by side (what `jdk setup`
       # needs) plus LICENSE and README.md. A `<file>.sha256` sidecar
@@ -243,6 +246,6 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          cargo publish -p jdk-resolve
-          cargo publish -p jdk-core
-          cargo publish -p jdk
+          cargo publish --locked -p jdk-resolve
+          cargo publish --locked -p jdk-core
+          cargo publish --locked -p jdk
