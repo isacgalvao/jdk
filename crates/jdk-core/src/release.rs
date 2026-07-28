@@ -9,7 +9,7 @@
 use crate::download::{Progress, hex};
 use crate::error::{Error, Result};
 use crate::file_ops::atomic_rename;
-use crate::http::{Http, UrlPolicy};
+use crate::http::{Http, UrlPolicy, is_loopback, url_host};
 use jdk_resolve::version::Version;
 use sha2::{Digest, Sha256};
 use std::env;
@@ -35,26 +35,50 @@ const MAX_BUNDLE: u64 = 64 * 1024 * 1024;
 const MAX_SIDECAR: u64 = 1024;
 const CHUNK: usize = 64 * 1024;
 
+/// This repository's releases — the only host outside loopback the
+/// self-update path fetches from.
+fn default_base() -> String {
+    format!("https://github.com/{REPO}/releases")
+}
+
 /// The releases base URL and the policy to reach it: `JDK_RELEASES` (trimmed,
-/// empty counts as unset) overrides the URL and admits plain-http loopback —
-/// the same hermetic-test injection point as `JDK_INDEX`/`JDK_FOOJAY`, with
-/// no test-only switch in the production path. The no-override default is
-/// this repository's releases over strict https.
+/// empty counts as unset) overrides the URL, and since that variable is a
+/// hermetic-test injection point — same as `JDK_INDEX`/`JDK_FOOJAY`, with no
+/// test-only switch in the production path — the override is confined to
+/// loopback, over plain http if it wants. Whoever writes the variable already
+/// runs as this user, so this is not a privilege boundary; what it denies is
+/// turning one write into a permanent hold on the binary every shim invokes,
+/// whose checksum sidecar comes from the same host as the zip. The
+/// no-override default is this repository's releases over strict https.
 pub fn base_url() -> (String, UrlPolicy) {
     match env::var("JDK_RELEASES") {
         Ok(value) if !value.trim().is_empty() => {
-            (value.trim().to_string(), UrlPolicy::AllowInsecureLoopback)
+            (value.trim().to_string(), UrlPolicy::LoopbackOnly)
         }
-        _ => (
-            format!("https://github.com/{REPO}/releases"),
-            UrlPolicy::Strict,
-        ),
+        _ => (default_base(), UrlPolicy::Strict),
     }
+}
+
+/// Vets an update source before a single request goes out: this repository's
+/// releases, or a loopback server. Checked here, rather than left to the
+/// policy [`base_url`] pairs with the URL, so the refusal can name the
+/// variable that caused it — the policy still guards every redirect hop, and
+/// it is the only thing standing between a loopback override and a `Location`
+/// header pointing anywhere.
+fn check_source(base: &str) -> Result<()> {
+    if base == default_base() || is_loopback(url_host(base)) {
+        return Ok(());
+    }
+    Err(Error::Security(format!(
+        "refusing {base} as the update source: JDK_RELEASES only points the updater \
+         at a loopback server (it exists for hermetic tests, not as a release mirror)"
+    )))
 }
 
 /// The newest released version, read from where the `{base}/latest` redirect
 /// lands; the response body is discarded.
 pub fn latest(http: &Http, base: &str) -> Result<Version> {
+    check_source(base)?;
     let url = format!("{base}/latest");
     let reply = http.get(&url, "update", &[])?;
     let status = reply.status();
@@ -91,6 +115,7 @@ pub fn fetch_bundle(
     dest_dir: &Path,
     mut progress: Option<Progress<'_>>,
 ) -> Result<PathBuf> {
+    check_source(base)?;
     let asset = format!("jdk-v{version}-windows-{ARCH}.zip");
     let url = format!("{base}/download/v{version}/{asset}");
     fs::create_dir_all(dest_dir).map_err(Error::io("create", dest_dir))?;
@@ -249,6 +274,28 @@ mod tests {
         assert!(parse_sidecar(b"").is_none());
         assert!(parse_sidecar(b"not-a-hash  file.zip").is_none());
         assert!(parse_sidecar(b"abc123  file.zip").is_none(), "too short");
+    }
+
+    #[test]
+    fn update_source_is_this_repo_or_loopback() {
+        assert!(check_source(&default_base()).is_ok());
+        assert!(check_source("http://127.0.0.1:8080/releases").is_ok());
+        assert!(check_source("https://localhost:8443/releases").is_ok());
+    }
+
+    #[test]
+    fn update_source_refuses_a_redirected_host() {
+        let err = check_source("https://releases.evil.example/jdk")
+            .unwrap_err()
+            .to_string();
+        // The message has to name the variable: nothing else in the run tells
+        // the user why an update they did not reconfigure just stopped.
+        assert!(err.contains("JDK_RELEASES"), "{err}");
+
+        // A host that only looks like the real one, and the real host under a
+        // path that is not this repository's releases.
+        assert!(check_source("https://github.com.evil.example/isacgalvao/jdk/releases").is_err());
+        assert!(check_source("https://github.com/someone-else/jdk/releases").is_err());
     }
 
     #[test]
