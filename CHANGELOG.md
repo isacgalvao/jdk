@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-26
+
+A correctness release. Nothing new to do — the things that were already there
+now work, and two of them could leave an installation unusable.
+
+### Fixed
+
+- `jdk setup` works after installation. It looked for `jdk-shim.exe` beside the
+  running executable, and nothing ever put it there, so the command `doctor` and
+  `update` recommend as the remedy failed on every real installation. Both now
+  place the shim in `bin` alongside the CLI.
+- A `#` in a pre-existing `JAVA_HOME` no longer breaks `java`. Setup saved the
+  path to `config.toml`, the reader treated the `#` as a comment even inside
+  quotes, and every shim invocation in a pinned directory then exited on a
+  config error. The two config readers that disagreed on this became one.
+- An interrupted `jdk update` no longer leaves an installation without
+  `jdk.exe`. The shim restores the copy that was moved aside, the sweep spares
+  it while the executable is missing, and staging leftovers are collected.
+- The durability the executable swap documented is now applied: the replace goes
+  through `MOVEFILE_WRITE_THROUGH`, which the code claimed and never reached.
+- `jdk available --ea` stopped removing general-availability builds — from the
+  live catalog, where the early-access query capped both, and from `--latest`,
+  where every line that had a GA release hid its early-access build.
+- A failing early-access query no longer vetoes the whole index publish. One
+  vendor's pre-release outage used to take general availability down with it.
+
+### Changed
+
+- **Early-access builds require a pre-release selector.** `jdk install 21.0.12`
+  used to silently install `21.0.12-ea+8` whenever the line had no GA release —
+  including through the shim's auto-install, inside a build. It now fails and
+  names the alternative. Ask for `21.0.12-ea` to get early access.
+- **Proprietary licenses need consent.** Installing Oracle JDK or Oracle GraalVM
+  printed a notice and downloaded anyway, while the client transmitted Oracle's
+  acceptance cookie on the user's behalf. It now prompts, accepts
+  `--accept-license` or `accept-license = true` in `config.toml`, and refuses
+  otherwise. The config key deliberately does not carry the shim's auto-install:
+  a `.jdkrc` comes from a repository, and standing consent is not consent for
+  someone else's project to enter a license agreement in your name.
+  Unattended installs of these two vendors need one of the two opt-ins.
+
+### Security
+
+- `JDK_RELEASES` is restricted to loopback. It overrode where `jdk update`
+  fetches its own replacement, and the checksum came from that same host, so a
+  user-writable environment variable could turn one execution into the binary
+  every shim invokes.
+- The Oracle acceptance cookie is now derived from the license notice instead of
+  a separate vendor list. The two had drifted apart in both directions:
+  `oracle_open_jdk` transmitted an acceptance cookie through no gate at all, and
+  GraalVM collected a GFTC consent that never reached the wire.
+
+### Internal
+
+- The release workflow runs the same gates as CI before it builds or publishes,
+  every cargo invocation is `--locked`, and publishing is preceded by a dry run —
+  a tag on a commit that never passed CI could previously reach crates.io, and a
+  partial publish is unrecoverable.
+- The declared MSRV is compiled by CI instead of asserted by a script comparing
+  two numbers that were never tested.
+- Internal version pins moved to `[workspace.dependencies]`, retiring the
+  PowerShell script that policed them.
+
 ## [0.4.0] - 2026-07-21
 
 ### Added
@@ -50,7 +113,8 @@ First public release — a Windows-first Java version manager.
 - PowerShell installer (`install.ps1`) with SHA-256 verification, plus release zips carrying `jdk.exe`, `jdk-shim.exe`, `LICENSE` and `README.md` alongside `.sha256` sidecars.
 - Published on crates.io: [`jdk`](https://crates.io/crates/jdk), [`jdk-core`](https://crates.io/crates/jdk-core) and [`jdk-resolve`](https://crates.io/crates/jdk-resolve).
 
-[Unreleased]: https://github.com/isacgalvao/jdk/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/isacgalvao/jdk/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.5.0
 [0.4.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.4.0
 [0.3.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.3.0
 [0.2.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.2.0

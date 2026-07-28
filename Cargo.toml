@@ -12,7 +12,7 @@ members = [
 # publish is off by default so an internal crate never leaks to crates.io; the
 # three published crates (jdk, jdk-core, jdk-resolve) opt back in explicitly.
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0"
@@ -25,8 +25,8 @@ publish = false
 # the version above. Forgetting it is not a silent drift: the path dependency no
 # longer satisfies the requirement and every `cargo check` fails to resolve.
 [workspace.dependencies]
-jdk-core = { path = "crates/jdk-core", version = "0.4.0" }
-jdk-resolve = { path = "crates/jdk-resolve", version = "0.4.0" }
+jdk-core = { path = "crates/jdk-core", version = "0.5.0" }
+jdk-resolve = { path = "crates/jdk-resolve", version = "0.5.0" }
 # Dev-only and never published, so it carries no requirement to keep in step.
 test-support = { path = "crates/test-support" }
 
