@@ -30,8 +30,9 @@ release, run a dry-run first and confirm the artifacts look right:
 
 ## 2. Version coherence
 
-`jdk` is a single-version workspace. `scripts/check-versions.ps1` enforces the
-invariant, but bump it deliberately, not by trial and error.
+`jdk` is a single-version workspace: every crate inherits `version.workspace`,
+and the internal dependencies resolve through `[workspace.dependencies]`, so the
+version lives in exactly one place.
 
 1. Bump `[workspace.package] version` in the root `Cargo.toml`.
 2. Bump the **three internal pins** that must echo that version:
@@ -77,19 +78,18 @@ Run these from the repo root before tagging. They mirror CI (`check` + `deny`
 jobs) plus the release build's own audit:
 
 ```powershell
-./scripts/check-versions.ps1          # pins, MSRV badge, CHANGELOG section, publish set
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 cargo deny check                      # license / advisory allowlist
-cargo audit                           # known-vulnerable deps (release build runs this too)
 ```
 
-`check-versions.ps1` fails if any internal pin drifts from the workspace version,
-if the README MSRV badge drifts from `rust-version`, if `CHANGELOG.md` has no
-`## [X.Y.Z]` section for the new version, or if a crate outside the published set
-(`jdk`, `jdk-core`, `jdk-resolve`) became publishable. Green here means the tag
-will not be rejected by the workflow.
+Running these by hand is a convenience, not the gate: the release workflow runs
+the same set itself before it builds or publishes anything, so a tag pushed on a
+commit that never went through CI still cannot reach crates.io. What the
+workflow additionally enforces, and this list cannot, is that the tag matches
+`[workspace.package] version` and that `CHANGELOG.md` carries a `## [X.Y.Z]`
+section for it — both checked before the first artifact is built.
 
 ## 5. Cut the release
 

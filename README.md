@@ -8,6 +8,7 @@
 <p align="center">
   <a href="https://crates.io/crates/jdk"><img src="https://img.shields.io/crates/v/jdk.svg?colorB=319e8c" alt="crates.io version"></a>
   <a href="https://crates.io/crates/jdk"><img src="https://img.shields.io/crates/l/jdk.svg" alt="license"></a>
+  <img src="https://img.shields.io/badge/MSRV-1.89-blue.svg" alt="minimum supported Rust version">
   <a href="https://github.com/isacgalvao/jdk/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/isacgalvao/jdk/ci.yml?branch=master&label=ci" alt="CI status"></a>
   <a href="https://github.com/isacgalvao/jdk/releases"><img src="https://img.shields.io/github/downloads/isacgalvao/jdk/total.svg" alt="downloads"></a>
 </p>
