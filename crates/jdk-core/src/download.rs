@@ -262,25 +262,41 @@ fn lowercase_origin(url: &str) -> String {
     normalized
 }
 
+/// The cookie by which Oracle records that the downloader accepted its license
+/// terms. Not a transport detail: sending it IS the act of accepting, which is
+/// why it is derived from [`license_notice`] rather than listed independently.
+const ACCEPTANCE_COOKIE: &str = "oraclelicense=accept-securebackup-cookie";
+
 /// Extra request headers some vendors require, keyed by the INDEX vendor id —
 /// never by URL substring (URLs are attacker-influenced, the vendor field is
 /// not). `Http::get_streaming` re-sends these on every redirect hop.
+///
+/// The acceptance cookie rides exactly on the vendors [`license_notice`] calls
+/// proprietary, because that notice is what the CLI gates the download behind:
+/// the two used to be independent lists and had drifted apart in BOTH
+/// directions — `oracle_open_jdk` (the GPL build, no notice, so no prompt) was
+/// sent the cookie anyway, declaring an acceptance nobody was asked for, while
+/// `graalvm` was prompted for the GFTC and then downloaded without the cookie
+/// that records the answer. Deriving one from the other makes "the cookie only
+/// ever leaves after consent" a property of the code, not of two lists staying
+/// in sync; `the_acceptance_cookie_rides_with_the_license_gate` fails if they
+/// are ever split again.
 fn vendor_headers(vendor: &str) -> Vec<(&'static str, String)> {
-    match vendor {
+    let mut headers = match vendor {
         "zulu" => vec![("Referer", "http://www.azul.com/downloads/zulu/".to_string())],
-        "oracle" | "oracle_open_jdk" => vec![(
-            "Cookie",
-            "oraclelicense=accept-securebackup-cookie".to_string(),
-        )],
         _ => Vec::new(),
+    };
+    if license_notice(vendor).is_some() {
+        headers.push(("Cookie", ACCEPTANCE_COOKIE.to_string()));
     }
+    headers
 }
 
 /// One-line license notice for vendors under proprietary terms — the only
 /// non-open-source distributions in the catalog. Keyed by the INDEX vendor id,
-/// like [`vendor_headers`]; the CLI prints it before the download so the user
-/// sees the terms before fetching the binary. `None` for the open-source
-/// vendors, which need no notice.
+/// like [`vendor_headers`]; the CLI prints it and takes the user's answer
+/// before any download happens. `None` for the open-source vendors, which need
+/// no notice and, by [`vendor_headers`], send no acceptance cookie.
 pub fn license_notice(vendor: &str) -> Option<&'static str> {
     match vendor {
         "oracle" => Some(
@@ -292,6 +308,12 @@ pub fn license_notice(vendor: &str) -> Option<&'static str> {
             "Oracle GraalVM is under the GraalVM Free Terms and Conditions (GFTC) — \
              https://www.oracle.com/downloads/licenses/graal-free-license.html",
         ),
+        // `oracle_open_jdk` is deliberately absent: those builds are Oracle's
+        // GPLv2+CPE OpenJDK, off the OTN gate the cookie was ever about, so
+        // neither a notice nor the cookie applies. Should some Oracle host
+        // turn out to demand it, the archive comes back as an HTML license
+        // page and the mandatory sha256 rejects it loudly — a visible failure,
+        // not a silent one, and never a bad JDK on disk.
         _ => None,
     }
 }
@@ -412,6 +434,43 @@ mod tests {
         // Open-source vendors get no notice.
         assert!(license_notice("temurin").is_none());
         assert!(license_notice("oracle_open_jdk").is_none());
+    }
+
+    /// The invariant behind the whole consent gate: the cookie that declares
+    /// acceptance goes out for a vendor exactly when the CLI stopped to ask
+    /// about that vendor's terms. Either half drifting — a cookie with no
+    /// notice, or a notice with no cookie — fails here.
+    #[test]
+    fn the_acceptance_cookie_rides_with_the_license_gate() {
+        let cookie = |vendor: &str| {
+            vendor_headers(vendor)
+                .into_iter()
+                .find_map(|(name, value)| (name == "Cookie").then_some(value))
+        };
+        // Index vendors plus the foojay-only ids a selector can still name:
+        // `jdk install oracle_open_jdk@21` goes straight to the live fallback.
+        for vendor in [
+            "temurin",
+            "zulu",
+            "corretto",
+            "liberica",
+            "microsoft",
+            "graalvm",
+            "graalvm_community",
+            "oracle",
+            "oracle_open_jdk",
+            "semeru",
+        ] {
+            assert_eq!(
+                cookie(vendor).as_deref(),
+                license_notice(vendor).map(|_| ACCEPTANCE_COOKIE),
+                "{vendor}: acceptance cookie and license notice disagree"
+            );
+        }
+        // Spelled out for the three that used to disagree.
+        assert_eq!(cookie("oracle").as_deref(), Some(ACCEPTANCE_COOKIE));
+        assert_eq!(cookie("graalvm").as_deref(), Some(ACCEPTANCE_COOKIE));
+        assert_eq!(cookie("oracle_open_jdk"), None);
     }
 
     #[test]
