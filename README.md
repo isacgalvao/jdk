@@ -193,9 +193,25 @@ demand. The behavior is set by `auto-install` in your config:
 ```toml
 vendor = "temurin"        # default vendor for bare versions like `21`
 auto-install = "prompt"   # always | prompt | never
+accept-license = false    # standing consent to proprietary vendor terms
 ```
 
-Both keys are optional; the values above are the defaults.
+All three keys are optional; the values above are the defaults. `jdk` writes
+all three back whenever it rewrites the file, `accept-license = false`
+included — a rewrite that dropped the key would revoke consent without saying
+so.
+
+`accept-license = true` stands in for the `--accept-license` flag on the
+vendors that ship under proprietary terms (Oracle's NFTC, GraalVM's GFTC), so
+`jdk install oracle@25` goes through on a host with no console to prompt on.
+
+It deliberately does **not** carry the shim's auto-install path, which keeps
+refusing those terms whatever the config says. A `.jdkrc` comes from a
+repository, and standing consent to install unattended is not consent for
+someone else's project to enter a license agreement in your name — the person
+who typed `java` never asked for one. CI that needs a proprietary JDK installed
+unattended runs `jdk install <selector> --accept-license` explicitly, which is
+consent given on the very command that installs.
 
 ### Environment variables
 
