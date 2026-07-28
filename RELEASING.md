@@ -54,9 +54,19 @@ and `jdk-core.workspace = true`, with no version of their own to bump.
    no longer supports fails there. The badge is prose in a `<img>` URL that no
    job reads: it is the half only a human catches.
 
-**Semver:** a new vendor/feature that stays backward-compatible is a **minor**
-bump (that is what `0.1.0 → 0.2.0` was); a breaking change to the CLI or config
-is a major once past 1.0.
+**Versioning:** `0.MINOR.PATCH`, and the major stays at zero. **MINOR** covers
+anything observable — a new feature, a removed or renamed command, flag or exit
+code, a change to the config or pin format. **PATCH** is a fix that does not
+change expected behaviour, plus docs, performance and dependencies. In 0.x the
+minor slot already carries incompatible change, so nothing is lost by never
+reaching 1.0, and stabilizing the contract stays a deliberate decision rather
+than a side effect of a version number.
+
+Two contracts version separately from the product. The **index schema** carries
+its own `version` in `index.json` and moves when the wire format does. The
+**Rust API** of `jdk-core` and `jdk-resolve` carries no contract at all: those
+crates are on crates.io only so `cargo install jdk` can resolve them, and both
+say so in their own docs — their version tracks the CLI, not their API.
 
 ## 3. Changelog
 
