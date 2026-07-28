@@ -5,6 +5,13 @@ on:
   push:
     branches: [master, main]
 
+# Least privilege, the same policy release.yml declares: no job here writes
+# anything back to the repository, so the token stays read-only. Without this
+# block the workflow would inherit whatever the repository default happens to
+# be, which is the one setting a workflow file cannot review.
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: windows-latest
