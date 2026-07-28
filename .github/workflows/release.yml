@@ -47,7 +47,7 @@ jobs:
       # cargo-auditable embeds the dependency SBOM in jdk.exe; cargo-audit
       # fails the build on a known-vulnerable dependency.
       - name: install cargo-auditable and cargo-audit
-        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9  # v2
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2
         with:
           tool: cargo-auditable,cargo-audit
 
