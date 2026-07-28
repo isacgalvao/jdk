@@ -4,6 +4,10 @@ on:
   pull_request:
   push:
     branches: [master, main]
+  # release.yml calls this workflow at the tagged commit rather than copying the
+  # gates into itself, so a tag is held to exactly what a pull request is held
+  # to, and the two can never drift apart.
+  workflow_call:
 
 # Least privilege, the same policy release.yml declares: no job here writes
 # anything back to the repository, so the token stays read-only. Without this

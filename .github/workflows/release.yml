@@ -1,10 +1,10 @@
-# Builds and publishes a jdk release. A tag push (`v*`) signs the artifacts
-# (keyless cosign over SHA256SUMS plus SLSA build-provenance attestations),
-# publishes a GitHub release and then the crates.io crates (jdk-resolve,
-# jdk-core, jdk, in dependency order — needs the CARGO_REGISTRY_TOKEN secret);
-# a manual run is a dry-run that only builds and uploads the same artifacts as
-# workflow artifacts (unsigned), so the pipeline can be exercised without
-# cutting a release.
+# Builds and publishes a jdk release. A tag push (`v*`) runs the full CI gates
+# at the tagged commit, signs the artifacts (keyless cosign over SHA256SUMS plus
+# SLSA build-provenance attestations), publishes a GitHub release and then the
+# crates.io crates (jdk-resolve, jdk-core, jdk, in dependency order — needs the
+# CARGO_REGISTRY_TOKEN secret); a manual run is a dry-run that runs the same
+# gates and uploads the same artifacts as workflow artifacts (unsigned), so the
+# pipeline can be exercised without cutting a release.
 #
 # Everything runs on Windows: the shim, the Defender scan and the zips are all
 # Windows-native. aarch64 is best-effort (continue-on-error) and never blocks
@@ -27,7 +27,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # fmt, clippy, the test suite, the MSRV check and cargo deny, run at the
+  # tagged commit before anything is built or uploaded. Until now the tag
+  # inherited no verification at all: ci.yml never triggered on tags, so
+  # publishing rested on the maintainer having pushed master first — a
+  # convention in RELEASING.md, not something the pipeline enforced.
+  #
+  # Calling ci.yml instead of copying its jobs here is what keeps the two
+  # honest. The alternative, ci.yml triggering on `push: tags`, cannot gate
+  # anything: Actions has no cross-workflow `needs`, and `workflow_run` fires
+  # after the fact in the default branch's context, so the release would still
+  # start regardless of the result.
+  gates:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   release:
+    needs: gates
     runs-on: windows-2025
     permissions:
       contents: write
