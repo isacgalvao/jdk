@@ -125,7 +125,7 @@ permanece em produção nesse intervalo.
 ## Bloco 1 · Desbloquear o produto
 
 ### `BUG-01` · `jdk setup` não funciona depois de instalado
-**🔴 Crítica · S · ✓ · v0.5.0**
+**[x] · 🔴 Crítica · S · ✓ · v0.5.0**
 
 `materialize_shims` resolve o shim via `sibling("jdk-shim.exe")`
 (`jdk/src/setup.rs:95-105`, `:119-127`) — ao lado do executável em execução.
@@ -151,7 +151,7 @@ que `<root>\bin\jdk-shim.exe` existe e é byte-idêntico após `setup` e `update
 ---
 
 ### `BUG-02` · Um `#` no `JAVA_HOME` anterior quebra o `java` do usuário
-**🔴 Crítica · S · ✓ · v0.5.0**
+**[x] · 🔴 Crítica · S · ✓ · v0.5.0**
 
 Cadeia de três elos:
 1. `save_java_home_before` (`jdk-core/src/config.rs:39`) rejeita só `"`, `\n`,
@@ -168,7 +168,7 @@ Provado rodando o crate real: `java-home-before = "C:\Tools\jdk#17"` →
 
 **Correção.** Rejeitar `#` em `save_java_home_before` (fecha o vetor na hora);
 separar o comentário do resto para que o leitor de config não trunque dentro de
-aspas; unificar com `DEBT-06`.
+aspas; unificar os dois leitores (`BUG-03`).
 
 **Pronto quando.** `save_java_home_before` com `#` retorna erro; round-trip
 `emit`→`parse` passa para caminhos com `#`, espaço, `%`, acento e `(`.
@@ -176,7 +176,7 @@ aspas; unificar com `DEBT-06`.
 ---
 
 ### `BUG-03` · Dois parsers de config forkados discordando
-**🟠 Alta · S · ✓ · v0.5.0 · junto com BUG-02**
+**[x] · 🟠 Alta · S · ✓ · v0.5.0 · junto com BUG-02**
 
 Existe um segundo leitor em `jdk-core/src/config.rs:59-80` que usa
 `split('#').next()` + `trim_matches('"')` e falha de forma **diferente** do
@@ -190,7 +190,7 @@ concordam sobre o mesmo texto.
 ---
 
 ### `BUG-04` · Janela de crash no swap deixa a máquina sem `jdk.exe`
-**🔴 Crítica · S · ✓ · v0.5.0**
+**[x] · 🔴 Crítica · S · ✓ · v0.5.0**
 
 `jdk-core/src/file_ops.rs:86-91`:
 ```rust
@@ -212,7 +212,7 @@ e `.old` presente → restaurar. `sweep_old` nunca apaga o `.old` enquanto
 ---
 
 ### `BUG-05` · Órfão `.exe.new` nunca varrido
-**🟡 Média · XS · ✓ · v0.5.0 · junto com BUG-04**
+**[x] · 🟡 Média · XS · ✓ · v0.5.0 · junto com BUG-04**
 
 `update.rs:157` e `shims.rs:141` filtram só `.exe.old`. Morte do processo
 depois de `update.rs:69` deixa ~5–10 MiB permanentes num diretório do PATH.
@@ -222,7 +222,7 @@ depois de `update.rs:69` deixa ~5–10 MiB permanentes num diretório do PATH.
 ## Bloco 2 · Corrigir comportamento
 
 ### `UX-01` · `jdk install 21.0.12` instala early-access sem avisar
-**🟠 Alta · S · ✓ · v0.5.0**
+**[x] · 🟠 Alta · S · ✓ · v0.5.0**
 
 Contra o índice publicado, `27`, `28`, `26.0.2` e `21.0.12` resolvem todos para
 builds `-ea`, porque nenhum tem GA. Nada é impresso.
@@ -252,7 +252,7 @@ O teste `catalog.rs:262` inverte de sentido.
 ---
 
 ### `UX-02` · Consentimento de licença proprietária
-**🟠 Alta · S · ✓ · v0.5.0**
+**[x] · 🟠 Alta · S · ✓ · v0.5.0**
 
 `jdk/src/install.rs:33-35` imprime aviso em stderr sem prompt e sem recusa,
 enquanto `jdk-core/src/download.rs:271-274` envia automaticamente
@@ -272,7 +272,7 @@ flag, `the_oracle_license_cookie_reaches_the_download_wire` continua passando.
 ---
 
 ### `UX-03` · `--ea` remove builds GA no fallback ao vivo
-**🟡 Média · XS · ✓ · v0.5.0**
+**[x] · 🟡 Média · XS · ✓ · v0.5.0**
 
 `jdk-core/src/foojay.rs:58-63` liga `latest=available` na query combinada
 `ea,ga`, capando o GA junto. O gerador faz certo — duas queries separadas
@@ -282,7 +282,7 @@ que sem a flag: uma flag que deveria só adicionar, remove.
 ---
 
 ### `UX-04` · `--ea --latest` se anulam
-**🟡 Média · XS · ✓ · v0.5.0 · junto com UX-03**
+**[x] · 🟡 Média · XS · ✓ · v0.5.0 · junto com UX-03**
 
 `trim_to_latest` (`jdk/src/available.rs:109-127`) agrupa por vendor+major e
 prefere estável, então toda linha com GA perde sua EA. Sobram só majors sem GA.
@@ -293,7 +293,7 @@ Travado por teste anterior ao feature.
 ---
 
 ### `UX-05` · Assimetria entre listar e instalar early-access
-**🟡 Média · XS · ✓ · v0.5.0 · depende de UX-01**
+**[x] · 🟡 Média · XS · ✓ · v0.5.0 · depende de UX-01**
 
 Depois de `UX-01`, `jdk install temurin@27-ea` passa a ser a forma correta de
 instalar um pre-release — e funciona **sem flag**. Mas `jdk available temurin@27`
@@ -315,7 +315,7 @@ concordam sobre o que existe, com ou sem flag.
 ---
 
 ### `IDX-01` · A query de EA veta a publicação do índice
-**🟠 Alta · XS · ✓ · v0.5.0**
+**[x] · 🟠 Alta · XS · ✓ · v0.5.0**
 
 `jdk-index-gen/src/fetch.rs:139-142` propaga ambas as queries com `?`. Falha na
 de EA de um vendor `REQUIRED` chega em `main.rs:141` e **aborta o publish
@@ -330,7 +330,7 @@ conclui o publish com aviso, publicando só GA.
 ## Bloco 3 · Travar o pipeline
 
 ### `CI-01` · Publica-se em crates.io sem gate de teste
-**🟠 Alta · S · ✓ · v0.5.0**
+**[x] · 🟠 Alta · S · ✓ · v0.5.0**
 
 `.github/workflows/ci.yml:3-6` dispara em `pull_request` e `push: branches` —
 **não em tags**. `release.yml` não roda `test`, `clippy`, `fmt`, `deny` nem
@@ -343,7 +343,7 @@ passa a disparar em `push: tags: ['v*']` e o release depende dele.
 ---
 
 ### `CI-02` · Nenhum `--locked` no repositório
-**🟠 Alta · XS · ✓ · v0.5.0**
+**[x] · 🟠 Alta · XS · ✓ · v0.5.0**
 
 `cargo audit` (`release.yml:76`) lê o `Cargo.lock`; o `cargo auditable build`
 três linhas depois pode resolver versões diferentes. Assina-se um binário cujas
@@ -354,7 +354,7 @@ dependências não passaram pelo gate.
 ---
 
 ### `CI-03` · `cargo publish` sem dry-run prévio
-**🟡 Média · XS · ○ · v0.5.0**
+**[x] · 🟡 Média · XS · ○ · v0.5.0**
 
 `release.yml:230-248` publica as três crates em sequência. Falha de `jdk-core`
 depois de `jdk-resolve` ter subido deixa a versão parcialmente publicada e
@@ -364,7 +364,7 @@ linhas a recuperação manual disso.
 ---
 
 ### `CI-04` · `ci.yml` sem bloco `permissions:`
-**🟡 Média · XS · ✓ · v0.5.0**
+**[x] · 🟡 Média · XS · ✓ · v0.5.0**
 
 Único workflow sem o bloco; herda o default do repositório, contradizendo a
 política declarada em `release.yml:23-24`.
@@ -372,7 +372,7 @@ política declarada em `release.yml:23-24`.
 ---
 
 ### `SEC-02` · `JDK_RELEASES` redireciona o auto-update para qualquer host
-**🟠 Alta · XS · ✓⚠ · v0.5.0**
+**[x] · 🟠 Alta · XS · ✓⚠ · v0.5.0**
 
 `jdk-core/src/release.rs:43-53` aceita qualquer valor da variável, e o sidecar
 de checksum vem do mesmo host. A política de URL é irrelevante: `Strict` só
@@ -392,7 +392,7 @@ confiança é `SEC-01`.
 ## Bloco 4 · Documentação
 
 ### `DOC-01` · Afirmações sem lastro no código
-**🟡 Média · S · ✓ · v0.5.0**
+**[x] · 🟡 Média · S · ✓ · v0.5.0**
 
 | Onde | Problema |
 |---|---|
@@ -409,10 +409,13 @@ confiança é `SEC-01`.
 | `CHANGELOG` 0.4.0 | "`--force` reinstalls the current version" — reinstala a *latest* |
 | `CHANGELOG` 0.2.0 | Oracle com "the same mandatory SHA-256 verification as every other vendor" — verdade na letra, mas `a39d958` dizia "best-effort vendor" e explicava a cadeia TOFU; o CHANGELOG destilou isso fora |
 
+As três linhas de CHANGELOG da tabela foram corrigidas depois do commit de
+release da v0.5.0, neste mesmo lote.
+
 ---
 
 ### `CI-05` · MSRV anunciado nunca é compilado
-**🟡 Média · XS · ✓ · v0.5.0**
+**[x] · 🟡 Média · XS · ✓ · v0.5.0**
 
 `README.md:11` e `Cargo.toml:17` dizem 1.89; `rust-toolchain.toml:6` pina
 1.97.0 e é o único toolchain que compila. `check-versions.ps1:42-47` valida que
@@ -577,6 +580,37 @@ curso.
 
 ---
 
+### `BUG-15` · `doctor` não verifica o shim de `bin` que a recuperação consome
+**🟡 Média · S · ✓ · v0.6.0 · companheiro de BUG-01**
+
+O check `jdk.exe` do `doctor` compara `bin\jdk.exe` com o binário em execução
+(`jdk/src/doctor.rs:537-567`); nada verifica `bin\jdk-shim.exe` — nem que
+existe, nem que os shims materializados são byte-idênticos a ele. `setup`
+resolve o shim via `sibling("jdk-shim.exe")`, então um `bin\jdk-shim.exe`
+ausente quebra de novo o caminho de recuperação que `BUG-01` consertou, e um
+desatualizado faz `setup` materializar shims velhos — enquanto `doctor`
+reporta saúde.
+
+**Pronto quando.** `doctor` acusa `bin\jdk-shim.exe` ausente e divergência
+entre ele e os shims materializados, com `jdk setup` como remédio apontado.
+
+---
+
+### `BUG-16` · A reconciliação de BUG-04 só dispara no caminho frio do auto-install
+**🟡 Média · S · ✓ · v0.6.0 · escopo de BUG-04**
+
+`restore_aside` é alcançado apenas dentro de `install_via_cli`
+(`jdk-shim/src/main.rs:207-215`): resolução pinada → store sem candidato →
+decisão de instalar → CLI ausente em `bin`. O hot path de resolução não paga o
+syscall, por decisão documentada (`main.rs:252-258`). Consequência: quem perde
+`jdk.exe` na janela de crash e nunca aciona o auto-install — o store já tem o
+JDK pinado — fica com `java` funcionando e sem `jdk` até reinstalar à mão.
+
+**Decisão a tomar.** Alargar o gatilho (toca o hot path do shim, estável desde
+a v0.1.0) ou documentar a fronteira como limite aceito de `BUG-04`.
+
+---
+
 # v0.7.0 — Distribuição e alcance
 
 ### `FEAT-02` · Empacotamento winget / scoop
@@ -661,7 +695,7 @@ que `FEAT-02` existir; até lá, `CI-06` cobre o caminho primário.
 ## Dívida técnica
 
 ### `DEBT-01` · Código morto em `file_ops` e garantia não entregue
-**🟠 Alta · XS · ✓ · junto com BUG-04 · bloqueado por D6**
+**[x] · 🟠 Alta · XS · ✓ · junto com BUG-04 · bloqueado por D6**
 
 `file_ops.rs:8-12` afirma que `fs::rename` falha com `AlreadyExists` no Windows.
 A std usa `MOVEFILE_REPLACE_EXISTING` e sobrescreve, então o ramo nunca dispara
@@ -869,7 +903,7 @@ justificativa ou o short-circuit.
 ## Infraestrutura — redução de superfície
 
 ### `CI-08` · `check-versions.ps1` resolve no lugar errado
-**🟠 Alta · S · ✓ · v0.5.0 · elevado por D10**
+**[x] · 🟠 Alta · S · ✓ · v0.5.0 · elevado por D10**
 
 61 linhas de PowerShell policiam três pins manuais (`jdk/Cargo.toml:12-13`,
 `jdk-core/Cargo.toml:12`) que `[workspace.dependencies]` colapsa numa
@@ -885,6 +919,10 @@ esforço se repete a cada release em vez de uma vez só.
 Lógica de "ler a versão" hoje triplicada: `check-versions.ps1:16`,
 `release.yml:57`; e o check de seção do CHANGELOG existe 3× (`:37`,
 `release.yml:69`, `:186`).
+
+A substituição aterrissou — herança via `[workspace.dependencies]` no
+`Cargo.toml` raiz, script deletado; o corpo acima fica como diagnóstico
+histórico de `bcf35cb`.
 
 ---
 
@@ -1177,7 +1215,7 @@ de 1 GiB. O bound justo já está no índice.
 ---
 
 ### `TST-02` · Lacunas que importam mais que o teatro
-**🟠 Alta · S · ✓**
+**[x] · 🟠 Alta · S · ✓**
 
 - O ramo `release.rs:195-198` (*"refusing an unverifiable download"* — sidecar
   404 com zip 200) **não é exercitado por nada**, e é o mais importante em
@@ -1188,6 +1226,9 @@ de 1 GiB. O bound justo já está no índice.
 - Os 5 testes de `tests/update.rs` são todos caminho feliz ou erro-antes-do-swap
   com mock HTTP. Nenhum simula processo morto no meio, arquivo travado ou falha
   do rename final. O caminho mais perigoso do produto é o único não testado.
+
+O bullet 2 (o teste do rollback) foi fechado pelo argumento de impossibilidade
+documentado em `file_ops.rs`, não por um teste.
 
 ---
 
@@ -1270,7 +1311,8 @@ ordenação observável, `DEBT-12` remove campos do índice. Com D10 e `IDX-06`,
 ## v0.6.0
 
 `SEC-01` (após D5) e `FEAT-01` primeiro — são o par que resolve "produzir
-garantias antes de consumi-las". Depois `SEC-03`, `BUG-06` a `BUG-13`.
+garantias antes de consumi-las". Depois `SEC-03`, `BUG-06` a `BUG-13`,
+`BUG-15` e `BUG-16`.
 Oportunisticamente: `DEBT-02`, `DEBT-03`, `DEBT-07`, `CI-08` a `CI-14`.
 
 ## v0.7.0
