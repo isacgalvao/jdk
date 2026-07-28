@@ -790,6 +790,94 @@ fn pin_file_with_bom_crlf_and_comment_resolves_successfully() {
     );
 }
 
+/// D4: Oracle's terms are not this tool's to accept on the user's behalf.
+/// Without consent the install stops before any download — the archive route
+/// is never touched — and the refusal names the flag that carries consent.
+/// A test harness has no console, which is the same position CI and the shim
+/// are in: refuse, never hang waiting for an answer nobody can give.
+#[test]
+fn a_proprietary_vendor_needs_consent_before_anything_is_downloaded() {
+    let server = Server::start();
+    let mut oracle = served_package(&server, "25.0.2");
+    oracle.vendor = "oracle".to_string();
+    serve_catalog(&server, std::slice::from_ref(&oracle));
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["install", "oracle@25"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(exit::CONFIG),
+        "stderr: {}",
+        stderr(&output)
+    );
+    let refusal = stderr(&output);
+    assert!(refusal.contains("NFTC"), "the terms come first: {refusal}");
+    assert!(refusal.contains("--accept-license"), "{refusal}");
+    assert_eq!(
+        server.hits("/dl/25.0.2.zip"),
+        0,
+        "no download of any kind without consent"
+    );
+    assert!(!world.candidate("oracle@25.0.2").exists());
+}
+
+/// The other half of D4: the flag consents, and only then does the download
+/// carry the cookie by which Oracle records that acceptance — the mechanism
+/// that made an unattended install a problem in the first place.
+#[test]
+fn accept_license_consents_and_the_oracle_cookie_reaches_the_wire() {
+    let server = Server::start();
+    let mut oracle = served_package(&server, "25.0.2");
+    oracle.vendor = "oracle".to_string();
+    serve_catalog(&server, std::slice::from_ref(&oracle));
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["install", "oracle@25", "--accept-license"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(world.candidate("oracle@25.0.2").exists());
+    let requests = server.requests_to("/dl/25.0.2.zip");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].header("cookie"),
+        Some("oraclelicense=accept-securebackup-cookie"),
+        "the acceptance cookie rides on a consented download"
+    );
+
+    // Already in the store: the re-run fetches nothing, so it asks nothing
+    // either — consent gates the download, not the command.
+    let output = world.jdk(&["install", "oracle@25"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("already installed"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(server.hits("/dl/25.0.2.zip"), 1, "one download total");
+}
+
+/// The shim path never asks: someone who typed `java` did not ask to enter a
+/// license agreement, so auto-install refuses proprietary vendors outright.
+#[test]
+fn the_shim_install_path_refuses_proprietary_terms_instead_of_accepting_them() {
+    let server = Server::start();
+    let mut oracle = served_package(&server, "25.0.2");
+    oracle.vendor = "oracle".to_string();
+    serve_catalog(&server, std::slice::from_ref(&oracle));
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["install", "oracle@25", "--from-shim"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(exit::CONFIG),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(server.hits("/dl/25.0.2.zip"), 0);
+}
+
 #[test]
 fn install_with_no_reachable_catalog_reports_both_causes() {
     let world = World::offline();
