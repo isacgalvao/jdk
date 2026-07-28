@@ -94,12 +94,12 @@ fn copy_shim_with(
 /// of `source`, and returns the names it (re)wrote — empty means everything
 /// was already current (idempotent second run). Each write is staged
 /// (`{tool}.exe.new`) and swapped in; a shim that is EXECUTING right now is
-/// handled by [`place`]'s rename-aside. `.old` leftovers of earlier
-/// while-running swaps are swept first, best-effort.
+/// handled by [`place`]'s rename-aside. Leftovers of earlier interrupted
+/// swaps are swept first, best-effort.
 pub fn materialize(source: &Path, shims_dir: &Path) -> Result<Vec<&'static str>> {
     let payload = fs::read(source).map_err(Error::io("read", source))?;
     fs::create_dir_all(shims_dir).map_err(Error::io("create", shims_dir))?;
-    sweep_aside(shims_dir);
+    sweep_leftovers(shims_dir);
 
     let mut written = Vec::new();
     for tool in TOOLS {
@@ -121,25 +121,30 @@ pub fn materialize(source: &Path, shims_dir: &Path) -> Result<Vec<&'static str>>
 
 /// Swaps `staging` into `dest`: a shim EXECUTING right now is moved aside to
 /// `{tool}.exe.old` — see [`file_ops::replace_running`] for the Win32
-/// semantics — and the `.old` stays until [`sweep_aside`] catches it once
+/// semantics — and the `.old` stays until [`sweep_leftovers`] catches it once
 /// the process has exited.
 fn place(staging: &Path, dest: &Path) -> Result<()> {
     file_ops::replace_running(staging, dest)
 }
 
-/// Clears `{tool}.exe.old` leftovers of earlier while-running replacements.
-/// Best-effort by design: an `.old` whose process is still alive cannot be
-/// deleted and is silently left for a later run.
-fn sweep_aside(shims_dir: &Path) {
-    let Ok(entries) = fs::read_dir(shims_dir) else {
+/// Clears what an interrupted replacement left behind: a `{tool}.exe.new`
+/// staging is always garbage, while a `{tool}.exe.old` aside is garbage only
+/// once the tool it was moved aside from is back in place — until then it is
+/// the last copy of that tool the store has. Best-effort by design: a leftover
+/// whose process is still alive cannot be deleted and is silently left for a
+/// later run.
+fn sweep_leftovers(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.ends_with(".exe.old"))
-        {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let sweepable = match name.strip_suffix(".old") {
+            Some(live) => live.ends_with(".exe") && dir.join(live).exists(),
+            None => name.ends_with(".exe.new"),
+        };
+        if sweepable {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -180,6 +185,44 @@ mod tests {
         assert_eq!(materialize(&source, &shims).unwrap(), vec!["jar"]);
         assert_eq!(fs::read(shims.join("jar.exe")).unwrap(), b"shim payload v1");
         assert!(!shims.join("jar.exe.new").exists(), "no staging leftovers");
+    }
+
+    /// BUG-05: a death between the staging copy and the swap leaves several
+    /// MiB per tool in a directory that is on the PATH, and the old filter
+    /// only ever looked at `.exe.old`.
+    #[test]
+    fn a_staging_orphan_is_swept_on_the_next_run() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("jdk-shim.exe");
+        fs::write(&source, b"shim payload v1").unwrap();
+        let shims = temp.path().join("shims");
+        materialize(&source, &shims).unwrap();
+        fs::write(shims.join("java.exe.new"), b"orphaned staging").unwrap();
+
+        assert_eq!(materialize(&source, &shims).unwrap(), Vec::<&str>::new());
+
+        assert!(!shims.join("java.exe.new").exists());
+    }
+
+    /// BUG-04, from the shim side: `replace_running` empties `dest` before the
+    /// replacement lands, so an aside whose tool is still missing is the only
+    /// copy left — sweeping it there would destroy it.
+    #[test]
+    fn an_aside_is_spared_while_its_tool_is_missing() {
+        let temp = TempDir::new().unwrap();
+        let shims = temp.path().join("shims");
+        fs::create_dir_all(&shims).unwrap();
+        fs::write(shims.join("java.exe.old"), b"the only copy left").unwrap();
+        fs::write(shims.join("jar.exe"), b"jar").unwrap();
+        fs::write(shims.join("jar.exe.old"), b"superseded").unwrap();
+
+        sweep_leftovers(&shims);
+
+        assert_eq!(
+            fs::read(shims.join("java.exe.old")).unwrap(),
+            b"the only copy left"
+        );
+        assert!(!shims.join("jar.exe.old").exists(), "jar.exe is back");
     }
 
     #[test]

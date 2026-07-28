@@ -19,7 +19,7 @@ use std::path::Path;
 
 pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
     let bin = root.join("bin");
-    sweep_old(&bin);
+    sweep_leftovers(&bin);
     let dest = bin.join("jdk.exe");
     guard_store_copy(&dest)?;
 
@@ -143,19 +143,26 @@ fn guard_store_copy(dest: &Path) -> Result<(), Fail> {
     .hint("otherwise reinstall with install.ps1, which places the store copy"))
 }
 
-/// Clears `bin\*.exe.old` leftovers of a previous while-running update.
-/// Best-effort by design: an `.old` whose process is still alive cannot be
-/// deleted and is silently left for a later run.
-fn sweep_old(bin: &Path) {
+/// Clears what an interrupted update left in `bin`: a `*.exe.new` staging is
+/// always garbage, while a `*.exe.old` aside is garbage only once the
+/// executable it was moved aside from is back in place. That condition is the
+/// whole point — `replace_running` empties `jdk.exe` before the replacement
+/// lands, so a death in that window leaves the aside as the machine's only
+/// copy of the CLI, the one jdk-shim restores from. Best-effort otherwise: a
+/// leftover whose process is still alive cannot be deleted and is silently
+/// left for a later run.
+fn sweep_leftovers(bin: &Path) {
     let Ok(entries) = fs::read_dir(bin) else {
         return;
     };
     for entry in entries.flatten() {
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.ends_with(".exe.old"))
-        {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let sweepable = match name.strip_suffix(".old") {
+            Some(live) => live.ends_with(".exe") && bin.join(live).exists(),
+            None => name.ends_with(".exe.new"),
+        };
+        if sweepable {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -177,6 +184,7 @@ fn progress(version: &Version) -> ProgressBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     fn v(text: &str) -> Version {
         text.parse().unwrap()
@@ -197,5 +205,49 @@ mod tests {
     fn force_reinstalls_wherever_the_versions_stand() {
         assert_eq!(decide(&v("0.3.0"), &v("0.3.0"), true), Decision::Update);
         assert_eq!(decide(&v("0.4.0"), &v("0.3.0"), true), Decision::Update);
+    }
+
+    /// The settled state: the swap finished, so the aside has been superseded
+    /// and the staging is an orphan (BUG-05 — the old filter ignored `.new`).
+    #[test]
+    fn sweep_clears_the_staging_and_a_superseded_aside() {
+        let temp = TempDir::new().unwrap();
+        let bin = temp.path();
+        fs::write(bin.join("jdk.exe"), b"live").unwrap();
+        fs::write(bin.join("jdk.exe.old"), b"superseded").unwrap();
+        fs::write(bin.join("jdk.exe.new"), b"orphaned staging").unwrap();
+        fs::write(bin.join("config.old"), b"someone else's file").unwrap();
+
+        sweep_leftovers(bin);
+
+        assert!(!bin.join("jdk.exe.old").exists());
+        assert!(!bin.join("jdk.exe.new").exists());
+        assert_eq!(fs::read(bin.join("jdk.exe")).unwrap(), b"live");
+        assert!(
+            bin.join("config.old").exists(),
+            "only executable leftovers are ours to delete"
+        );
+    }
+
+    /// BUG-04: killed inside the swap window, `bin` holds no jdk.exe and the
+    /// aside is the only copy of the CLI left on the machine. Deleting it here
+    /// is what turned a crash into a bricked installation.
+    #[test]
+    fn sweep_spares_the_aside_while_jdk_exe_is_missing() {
+        let temp = TempDir::new().unwrap();
+        let bin = temp.path();
+        fs::write(bin.join("jdk.exe.old"), b"the only copy left").unwrap();
+        fs::write(bin.join("jdk.exe.new"), b"orphaned staging").unwrap();
+
+        sweep_leftovers(bin);
+
+        assert_eq!(
+            fs::read(bin.join("jdk.exe.old")).unwrap(),
+            b"the only copy left"
+        );
+        assert!(
+            !bin.join("jdk.exe.new").exists(),
+            "a staging orphan is garbage either way"
+        );
     }
 }

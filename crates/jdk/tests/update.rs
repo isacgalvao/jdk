@@ -91,11 +91,17 @@ fn update_swaps_the_running_store_copy_and_rewrites_the_shims() {
     let world = World::new(server.url().to_string());
     let exe = world.place_store_copy();
     let old = fs::read(&exe).unwrap();
-    // An `.old` leftover of an earlier while-running update: the sweep must
-    // clear it, and the swap then recreates it with the CURRENT old bytes.
+    // Leftovers of an earlier interrupted update: the sweep must clear both
+    // (jdk.exe is in place, so the aside is superseded rather than precious),
+    // and the swap then recreates the `.old` with the CURRENT old bytes.
     fs::write(
         world.root.join("bin").join("jdk.exe.old"),
         b"stale leftover",
+    )
+    .unwrap();
+    fs::write(
+        world.root.join("bin").join("jdk.exe.new"),
+        b"orphaned staging",
     )
     .unwrap();
 
@@ -119,6 +125,10 @@ fn update_swaps_the_running_store_copy_and_rewrites_the_shims() {
             tool.name
         );
     }
+    assert!(
+        !world.root.join("bin").join("jdk.exe.new").exists(),
+        "no staging orphan survives the update"
+    );
     let message = stderr(&output);
     assert!(message.contains(&format!("{LOCAL} → 9.9.9")), "{message}");
     assert!(
