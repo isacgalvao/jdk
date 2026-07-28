@@ -29,6 +29,56 @@ adiados estão registrados em **Parqueado** com a razão.
 | D2 | `jdk install 27` quando a linha só tem EA | **Falhar** e apontar o seletor EA |
 | D3 | Futuro do `jdk update` | **Endurecer**: verificação ancorada + recuperação de crash |
 | D4 | Licença proprietária da Oracle | **Consentimento explícito**: prompt + `--accept-license` |
+| D10 | Esquema de versionamento | **`0.MINOR.PATCH` sem teto de minor**, com as superfícies de contrato desamarradas — ver abaixo |
+| D11 | O que `jdk-core` e `jdk-resolve` são | **API interna sem garantia de estabilidade**, publicadas só para viabilizar `cargo install jdk` |
+
+### D10 — Esquema de versionamento
+
+O número de versão vinha carregando quatro promessas ao mesmo tempo. A decisão
+separa o que tem relógio próprio.
+
+**Versão do produto: `0.MINOR.PATCH`, sem teto de minor e sem major.**
+
+| Bump | Quando |
+|---|---|
+| **MINOR** | Muda comportamento observável do CLI; remove ou renomeia comando, flag ou exit code; muda o formato de config ou de pin; adiciona feature |
+| **PATCH** | Correção que não muda comportamento esperado; documentação; performance; dependências |
+
+Em 0.x o minor é o slot de mudança incompatível — não é preciso uma major para
+sinalizar quebra, e é por isso que 0.x serve bem aqui. Consequência imediata: o
+próximo ciclo é **v0.5.0**, porque `UX-01` e `UX-02` removem comportamento.
+
+**Contrato do índice: número próprio.** `index.json` já carrega `"version": 1` e
+nada o usa. Ele sobe quando o *formato* muda, independente do produto, e o
+cliente precisa saber recusar ou degradar diante de uma versão maior que a que
+conhece. Isso é o que permite evoluir o índice sem medo — ver `IDX-06`, que
+deixa de depender de um marco de estabilização para acontecer.
+
+**API das libs: sem contrato.** Ver D11.
+
+**CalVer foi considerado e descartado.** `2026.7.0` comunicaria bem "isto é uma
+ferramenta, não uma API", mas o Cargo leria `2026.7 → 2026.8` como bump de
+major, colidindo com a regra de nunca bumpar major. Só fecha se o projeto sair
+do crates.io; reavaliar se `FEAT-02` (winget) tornar o `cargo install`
+dispensável.
+
+### D11 — Libs sem garantia de estabilidade
+
+`jdk-core` e `jdk-resolve` estão no crates.io porque `cargo install jdk` exige
+que as dependências estejam no registro — não porque alguém pediu uma API. São
+efeito colateral do canal de distribuição.
+
+Publicar uma lib é, na prática, prometer estabilidade — exatamente o
+compromisso que o projeto não quer assumir agora. A saída é declarar em vez de
+fingir: doc comment em `lib.rs` das duas e sinalização na `description` que o
+crates.io exibe.
+
+Efeitos: `DEBT-02` (`fetch_archive_capped` público) deixa de ser risco de
+contrato e vira higiene; a versão das libs pode acompanhar o CLI sem que um bump
+de minor signifique quebra de API — porque não há API prometida.
+
+**Reavaliar** se `FEAT-02` tornar o `cargo install` dispensável: aí a opção de
+parar de publicar volta à mesa, e com ela o CalVer.
 
 ### Decisões ainda em aberto
 
@@ -433,6 +483,30 @@ resolveria de graça; a ausência de desinstalador não tem contorno.
 
 ---
 
+### `IDX-06` · Versionamento explícito do contrato do índice
+**🟡 Média · S · ✓ · v0.6.0 · consequência de D10**
+
+`index.json` carrega `"version": 1` e **nada o consome**: não há política escrita
+sobre o que é mudança compatível, nem código que reaja a uma versão maior que a
+conhecida. O schema normativo vive num comentário em `jdk-core/src/index.rs`,
+que se declara "the index contract".
+
+**Por que na v0.6.0 e não depois.** O código que sabe lidar com um schema
+desconhecido só ajuda em clientes que **já o tenham embarcado**. Adiar até a
+base crescer é adiar até tarde demais: as instalações que precisariam da
+proteção seriam justamente as antigas, sem ela. O cliente v0.4.0 de hoje já está
+nessa condição — a diferença é que a base é zero, então o custo de consertar
+agora também é.
+
+**Escopo.** Regra escrita de compatibilidade; cliente que recusa (ou degrada com
+mensagem acionável) uma `version` maior que a que conhece; `doctor` reportando
+skew de schema em vez de falhar opaco.
+
+**Pronto quando.** Fixture com `"version": 2` produz mensagem acionável, não
+erro de desserialização.
+
+---
+
 ### `BUG-06` · Sem retry/backoff em nenhum passo do swap
 **🟡 Média · S · ✓ · v0.6.0**
 
@@ -601,12 +675,17 @@ remover as duas funções e a afirmação. Não deixar como está.
 ---
 
 ### `DEBT-02` · `fetch_archive_capped` é `pub` num crate publicado
-**🟡 Média · S · ✓**
+**⚪ Baixa · S · ✓ · rebaixado por D11**
 
 `jdk-core/src/download.rs:42-43` com `publish = true`. Num commit intitulado
 *"seams on the security-critical paths"*, o teto de 4 GiB deixou de ser
 invariante do crate e virou convenção de entry point. `#[doc(hidden)]` esconde
 do rustdoc, não restringe chamada.
+
+**Por que caiu de prioridade.** Com D11, não há contrato de API a proteger — o
+risco de terceiros dependerem disso deixou de ser um compromisso e virou
+problema deles. Continua valendo corrigir como higiene: um teto de segurança
+deve ser invariante do crate, não convenção de quem chama.
 
 **Correção.** Mover a capacidade de mentir o `Content-Length` para o
 `test-support`, que não é publicado.
@@ -790,13 +869,18 @@ justificativa ou o short-circuit.
 ## Infraestrutura — redução de superfície
 
 ### `CI-08` · `check-versions.ps1` resolve no lugar errado
-**🟡 Média · S · ✓**
+**🟠 Alta · S · ✓ · v0.5.0 · elevado por D10**
 
 61 linhas de PowerShell policiam três pins manuais (`jdk/Cargo.toml:12-13`,
 `jdk-core/Cargo.toml:12`) que `[workspace.dependencies]` colapsa numa
 declaração — o workspace **já** usa herança de versão. Adotar a herança e
 deletar o script. O check de MSRV que ele faz é falso de qualquer forma
 (`CI-05`).
+
+**Por que subiu de prioridade.** Com D10, bump de minor passa a ser frequente, e
+cada um exige reescrever os três pins à mão. Manter o script é pagar 61 linhas
+de vigilância para um problema que uma linha de configuração elimina — e o
+esforço se repete a cada release em vez de uma vez só.
 
 Lógica de "ler a versão" hoje triplicada: `check-versions.ps1:16`,
 `release.yml:57`; e o check de seção do CHANGELOG existe 3× (`:37`,
@@ -815,8 +899,13 @@ Precisa passar a mencionar o contrato de que o `jdk update` depende (redirect
 `/releases/latest`, naming do zip e sidecar): hoje um release marcado como
 pre-release quebra todos os clientes e o checklist não pega.
 
-Registro justo: `RELEASING.md` é honesto onde documenta domínio — política
-semver, "não use tag RC", recuperação de publish parcial.
+**Corrigir junto (D10).** `RELEASING.md:48-50` diz hoje que *"a breaking change
+to the CLI or config is a major once past 1.0"* — uma regra ancorada num marco
+que não vai existir. Substituir pela tabela de D10, e registrar que o contrato
+do índice tem número próprio (`IDX-06`) e que as libs não têm contrato (D11).
+
+Registro justo: `RELEASING.md` é honesto onde documenta domínio — "não use tag
+RC", recuperação de publish parcial.
 
 ---
 
@@ -1139,31 +1228,13 @@ Itens cujo gatilho é uma decisão de produto que ainda não foi tomada. Ficam
 visíveis aqui em vez de numa release que não existe, para que a decisão seja
 consciente quando chegar — e não descoberta tarde.
 
-### `IDX-06` · Política de evolução do schema do índice
-**🟡 Média · S · ✓ · gatilho: decidir estabilizar o contrato**
-
-`index.json` já carrega `"version": 1`, mas não existe política escrita sobre o
-que constitui mudança compatível, como o cliente reage a uma versão maior que a
-que conhece, nem por quanto tempo uma versão antiga continua sendo publicada. O
-schema normativo vive num comentário em `jdk-core/src/index.rs`, que se declara
-"the index contract".
-
-Enquanto não houver compromisso de estabilidade, isto é barato de adiar: o
-gerador e o cliente sobem juntos. Passa a importar no momento em que existirem
-instalações antigas que não acompanham o gerador — que é exatamente o efeito
-que `FEAT-02` (winget) produz ao ampliar a base.
-
-**Gatilho.** Primeira release em que se queira prometer compatibilidade, ou
-quando a base instalada deixar de acompanhar o índice.
-
----
-
 ### `DEBT-09` (remodelagem de `pre_release`) e `DEBT-12` (campos especulativos)
 
-Descritos em **Contínuo · Dívida técnica**. Ambos são reversíveis enquanto o
-contrato não estiver congelado, e caros de fazer sem essa decisão — `DEBT-09`
-muda ordenação observável, `DEBT-12` remove campos que terceiros poderiam já
-estar lendo. Manter listados, não agendados.
+Descritos em **Contínuo · Dívida técnica**. Ambos são reversíveis enquanto não
+houver compromisso de estabilidade, e caros de fazer depois — `DEBT-09` muda
+ordenação observável, `DEBT-12` remove campos do índice. Com D10 e `IDX-06`, o
+índice ganha um caminho de evolução próprio; `DEBT-12` passa a depender só disso.
+`DEBT-09` continua sem gatilho: fazer enquanto o custo é baixo, ou nunca.
 
 ---
 

@@ -1,6 +1,6 @@
 [package]
 name = "jdk-core"
-description = "Catalog, download and install engine for the jdk version manager"
+description = "Catalog, download and install engine for the jdk version manager (internal API, no stability guarantee)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "jdk-resolve"
-description = "Selector parsing, pin-file cascade and store paths shared by the jdk CLI and shim"
+description = "Selector parsing, pin-file cascade and store paths shared by the jdk CLI and shim (internal API, no stability guarantee)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

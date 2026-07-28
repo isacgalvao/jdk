@@ -9,6 +9,13 @@
 //!   [`install`] (locked, idempotent);
 //! - self-update source: [`release`] (latest-version discovery and verified
 //!   bundle fetch from this project's own GitHub releases).
+//!
+//! # No API stability guarantee
+//!
+//! This crate is an implementation detail of the `jdk` CLI, published only so
+//! `cargo install jdk` can resolve it. Every item is free to change or
+//! disappear in any release, including a patch one — the version number tracks
+//! the CLI, not this API. Depend on it and expect breakage.
 
 #[cfg(windows)]
 pub mod admin;
