@@ -140,4 +140,50 @@ mod tests {
         assert!(!staging.exists());
         assert!(!temp.path().join("jdk.exe.old").exists());
     }
+
+    /// First placement, where there is no occupant at all: `jdk setup` on a
+    /// machine with an empty shims directory, and the `bin\jdk-shim.exe` an
+    /// update parks beside the CLI. The callers reach it only through
+    /// `shims::materialize`, whose tests are `cfg(windows)`, so nothing on a
+    /// non-Windows build exercised it. Catches any precondition that assumes
+    /// `dest` is occupied — a rename-aside taken unconditionally would look for
+    /// something to move and fail every fresh install.
+    #[test]
+    fn replace_running_places_a_destination_that_does_not_exist_yet() {
+        let temp = TempDir::new().unwrap();
+        let staging = temp.path().join("java.exe.new");
+        let dest = temp.path().join("java.exe");
+        fs::write(&staging, b"v1").unwrap();
+
+        replace_running(&staging, &dest).unwrap();
+
+        assert_eq!(fs::read(&dest).unwrap(), b"v1");
+        assert!(!staging.exists());
+        assert!(!temp.path().join("java.exe.old").exists());
+    }
+
+    /// A swap that cannot happen must cost the destination nothing. The
+    /// tempting Windows "fix" for the ACCESS_DENIED a running image returns is
+    /// to delete `dest` before renaming over it; with a staging that never
+    /// arrived, that shortcut leaves the machine with no `jdk.exe` and no
+    /// aside to restore from — the bricked state BUG-04 was about. A missing
+    /// staging is the one reachable failure on both platforms (ERROR_FILE_NOT_FOUND
+    /// and ENOENT both surface as `NotFound`, never `PermissionDenied`), so it
+    /// takes the plain arm and may not touch `dest`.
+    #[test]
+    fn a_swap_that_cannot_run_leaves_the_destination_untouched() {
+        let temp = TempDir::new().unwrap();
+        let staging = temp.path().join("jdk.exe.new");
+        let dest = temp.path().join("jdk.exe");
+        fs::write(&dest, b"v1").unwrap();
+
+        let err = replace_running(&staging, &dest).unwrap_err();
+
+        assert!(err.to_string().contains("place"), "{err}");
+        assert_eq!(fs::read(&dest).unwrap(), b"v1", "the live copy survives");
+        assert!(
+            !temp.path().join("jdk.exe.old").exists(),
+            "only a PermissionDenied refusal may move the destination aside"
+        );
+    }
 }

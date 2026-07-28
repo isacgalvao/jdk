@@ -2,7 +2,8 @@
 //! indicatif progress bar over jdk-core's plain byte callback. `--from-shim`
 //! keeps the same install but drops the next-step hints (the shim's caller
 //! is mid-`java` invocation, not exploring) and declines proprietary license
-//! terms instead of accepting them on that caller's behalf.
+//! terms — the machine's standing `accept-license` included — instead of
+//! accepting them on that caller's behalf.
 
 use crate::fail::Fail;
 use crate::{remote, uninstall};
@@ -42,7 +43,8 @@ pub fn run(root: &Path, selector: &str, from_shim: bool, accept_license: bool) -
     if let Some(notice) = jdk_core::download::license_notice(&package.vendor)
         && !already_installed(root, &package)
     {
-        accept_terms(&selector, &name, notice, accept_license, from_shim)?;
+        let granted = Consent::of(accept_license, config.accept_license, from_shim);
+        accept_terms(&selector, &name, notice, granted, from_shim)?;
     }
 
     let bar = progress(&name, package.size);
@@ -93,10 +95,53 @@ fn already_installed(root: &Path, package: &Package) -> bool {
     })
 }
 
-/// Consent for a vendor under proprietary terms. `--accept-license` settles
-/// it; otherwise the terms are shown and the answer read from an interactive
-/// console, with refusal as the default on every other path — plain Enter,
-/// EOF, or no console at all (CI and IDE pipes decline instead of hanging).
+/// Where a standing acceptance of proprietary terms came from, so the line
+/// this prints names the thing the user would have to undo to withdraw it.
+/// Saying "--accept-license" for a config-granted consent would send someone
+/// hunting a flag they never typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Consent {
+    /// Nothing granted it up front; the prompt decides.
+    Ask,
+    /// `--accept-license` on this invocation.
+    Flag,
+    /// `accept-license = true` in `config.toml`.
+    ConfigFile,
+}
+
+impl Consent {
+    /// The flag settles it for one run, the config key for the whole machine;
+    /// either is enough, and both at once is a redundant yes, not a conflict.
+    ///
+    /// The config key alone does NOT carry the shim path. The flag is typed on
+    /// the very command that installs, so it is consent for this install by
+    /// the person running it; the config key is ambient — written earlier,
+    /// possibly by whoever set the machine up — and the shim's caller only
+    /// typed `java`. Standing consent to install unattended is not consent for
+    /// a third party's `java` to enter a license agreement in your name.
+    fn of(flag: bool, config: bool, from_shim: bool) -> Consent {
+        match (flag, config && !from_shim) {
+            (true, _) => Consent::Flag,
+            (false, true) => Consent::ConfigFile,
+            (false, false) => Consent::Ask,
+        }
+    }
+
+    /// How the acceptance was given, or `None` when it was not given at all.
+    fn granted_by(self) -> Option<&'static str> {
+        match self {
+            Consent::Ask => None,
+            Consent::Flag => Some("--accept-license"),
+            Consent::ConfigFile => Some("accept-license = true in config.toml"),
+        }
+    }
+}
+
+/// Consent for a vendor under proprietary terms. `--accept-license` or
+/// `accept-license = true` in `config.toml` settles it; otherwise the terms
+/// are shown and the answer read from an interactive console, with refusal as
+/// the default on every other path — plain Enter, EOF, or no console at all
+/// (CI and IDE pipes decline instead of hanging).
 ///
 /// The shim path never asks: `java` reaching for a missing JDK is not a
 /// moment of informed consent, and someone who only typed `java` did not ask
@@ -105,12 +150,12 @@ fn accept_terms(
     selector: &Selector,
     name: &str,
     notice: &str,
-    accepted: bool,
+    granted: Consent,
     from_shim: bool,
 ) -> Result<(), Fail> {
     eprintln!("jdk: {notice}");
-    if accepted {
-        eprintln!("jdk: terms accepted via --accept-license");
+    if let Some(via) = granted.granted_by() {
+        eprintln!("jdk: terms accepted via {via}");
         return Ok(());
     }
 
@@ -131,14 +176,20 @@ fn accept_terms(
     }
     // CONFIG, not FAILURE: nothing broke — the invocation is missing consent
     // the user alone can give, and the hint is the invocation that carries it.
-    Err(Fail::new(
+    let mut fail = Fail::new(
         exit::CONFIG,
         format!("{name} was not installed: its license terms were not accepted"),
     )
     .hint(format!(
         "accept them with `jdk install {selector} --accept-license`"
-    ))
-    .hint("`jdk available` lists the open-source builds, which need no acceptance"))
+    ));
+    // Only off the shim path: there the config key is deliberately not
+    // honored, so naming it would send someone to edit a file that changes
+    // nothing about the `java` they just ran.
+    if !from_shim {
+        fail = fail.hint("or once for this machine with `accept-license = true` in config.toml");
+    }
+    Err(fail.hint("`jdk available` lists the open-source builds, which need no acceptance"))
 }
 
 /// The wiring at the heart of [`accept_terms`], pulled out so it can be
@@ -281,6 +332,42 @@ mod tests {
                 "{answer:?}"
             );
         }
+    }
+
+    /// Either route grants consent, and the message names the one that did:
+    /// pointing at `--accept-license` when it was the config file sends the
+    /// user hunting a flag they never typed.
+    #[test]
+    fn consent_comes_from_the_flag_or_the_config_and_says_which() {
+        assert_eq!(Consent::of(false, false, false), Consent::Ask);
+        assert_eq!(Consent::of(true, false, false), Consent::Flag);
+        assert_eq!(Consent::of(false, true, false), Consent::ConfigFile);
+        // Both: the flag is the one typed here, so it is the one named.
+        assert_eq!(Consent::of(true, true, false), Consent::Flag);
+
+        assert_eq!(Consent::of(false, false, false).granted_by(), None);
+        assert_eq!(
+            Consent::of(true, false, false).granted_by(),
+            Some("--accept-license")
+        );
+        assert_eq!(
+            Consent::of(false, true, false).granted_by(),
+            Some("accept-license = true in config.toml")
+        );
+    }
+
+    /// The shim path takes no ambient consent: `accept-license = true` was
+    /// written for unattended installs, not to let someone else's `java` enter
+    /// a license agreement in the machine owner's name.
+    #[test]
+    fn the_config_key_does_not_consent_on_the_shim_path() {
+        assert_eq!(Consent::of(false, true, true), Consent::Ask);
+        assert_eq!(Consent::of(false, false, true), Consent::Ask);
+        assert_eq!(Consent::of(false, true, true).granted_by(), None);
+        // Neither does the prompt, which the shim path never reaches.
+        assert!(!decide_accept(false, || panic!(
+            "the shim path must not ask"
+        )));
     }
 
     #[test]
