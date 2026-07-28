@@ -11,11 +11,11 @@ publish.workspace = true
 # Firewall: only jdk-resolve (std-only) and the Win32 bindings. No network,
 # no async, no parsers beyond jdk-resolve.
 [dependencies]
-jdk-resolve = { path = "../jdk-resolve" }
+jdk-resolve.workspace = true
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
 
 # Dev-only (the runtime firewall above is untouched): the auto-install e2e
 # serves a loopback catalog and drives the real jdk.exe.
 [dev-dependencies]
 tempfile = "3"
-test-support = { path = "../test-support" }
+test-support.workspace = true

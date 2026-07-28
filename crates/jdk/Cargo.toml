@@ -9,8 +9,8 @@ repository.workspace = true
 publish = true
 
 [dependencies]
-jdk-core = { path = "../jdk-core", version = "0.4.0" }
-jdk-resolve = { path = "../jdk-resolve", version = "0.4.0" }
+jdk-core.workspace = true
+jdk-resolve.workspace = true
 clap = { version = "4", features = ["derive"] }
 # Progress rendering lives here, never in jdk-core (which only exposes a
 # callback) — the engine stays UI-free.
@@ -18,4 +18,4 @@ indicatif = "0.18"
 
 [dev-dependencies]
 tempfile = "3"
-test-support = { path = "../test-support" }
+test-support.workspace = true
