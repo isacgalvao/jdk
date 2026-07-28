@@ -326,6 +326,127 @@ fn available_lists_flags_filters_and_trims_to_latest() {
     assert!(stderr(&output).contains("nothing"), "{}", stderr(&output));
 }
 
+/// The listing and the installer must agree on what exists: a version only
+/// early access satisfies is shown instead of denied, and the pre-release
+/// selector needs no more flags here than it does for `jdk install`.
+#[test]
+fn available_shows_the_early_access_line_that_install_resolves() {
+    let server = Server::start();
+    let mut nightly = package(
+        "27-ea+31",
+        "https://example.invalid/a.zip",
+        &"a".repeat(64),
+        1,
+    );
+    nightly.release_status = ReleaseStatus::Ea;
+    nightly.lts = false;
+    let stable = package(
+        "21.0.5",
+        "https://example.invalid/b.zip",
+        &"b".repeat(64),
+        1,
+    );
+    serve_catalog(&server, &[nightly, stable]);
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["available", "temurin@27"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains("temurin@27-ea+31"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stderr(&output).contains("only early-access builds match temurin@27"),
+        "the switch is announced: {}",
+        stderr(&output)
+    );
+
+    let output = world.jdk(&["available", "temurin@27-ea"]);
+    assert!(
+        stdout(&output).contains("temurin@27-ea+31"),
+        "a pre-release filter implies --ea: {}",
+        stdout(&output)
+    );
+
+    // A stable filter is untouched by all this: no widening, no EA rows.
+    let output = world.jdk(&["available", "temurin@21"]);
+    let listing = stdout(&output);
+    assert!(
+        listing.contains("temurin@21.0.5") && !listing.contains("27-ea"),
+        "{listing}"
+    );
+}
+
+/// `--ea --latest` used to cancel out: grouping by vendor+major alone let
+/// every stable line swallow its own preview, so early access survived only
+/// for majors with no GA at all.
+#[test]
+fn latest_with_early_access_keeps_both_the_ga_and_the_ea_of_a_line() {
+    let server = Server::start();
+    let mut nightly = package(
+        "21.0.6-ea",
+        "https://example.invalid/a.zip",
+        &"a".repeat(64),
+        1,
+    );
+    nightly.release_status = ReleaseStatus::Ea;
+    let older = package(
+        "21.0.4",
+        "https://example.invalid/b.zip",
+        &"b".repeat(64),
+        1,
+    );
+    let newer = package(
+        "21.0.5",
+        "https://example.invalid/c.zip",
+        &"c".repeat(64),
+        1,
+    );
+    serve_catalog(&server, &[nightly, older, newer]);
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["available", "--latest", "--ea", "temurin"]);
+    let listing = stdout(&output);
+    assert!(listing.contains("temurin@21.0.5"), "{listing}");
+    assert!(listing.contains("temurin@21.0.6-ea"), "{listing}");
+    assert!(
+        !listing.contains("temurin@21.0.4"),
+        "still one per status: {listing}"
+    );
+
+    let output = world.jdk(&["available", "--latest", "temurin"]);
+    let listing = stdout(&output);
+    assert!(
+        listing.contains("temurin@21.0.5") && !listing.contains("21.0.6-ea"),
+        "without the flag the line keeps only its stable build: {listing}"
+    );
+}
+
+/// A vendor with no early access at all says so, instead of leaving `--ea`
+/// looking broken.
+#[test]
+fn ea_on_a_vendor_that_publishes_none_says_so() {
+    let server = Server::start();
+    let stable = package(
+        "21.0.5",
+        "https://example.invalid/a.zip",
+        &"a".repeat(64),
+        1,
+    );
+    serve_catalog(&server, std::slice::from_ref(&stable));
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["available", "temurin@99", "--ea"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("temurin has no early-access builds"),
+        "{}",
+        stderr(&output)
+    );
+}
+
 #[test]
 fn available_skips_a_broken_vendor_and_lists_the_healthy_ones() {
     let server = Server::start();
