@@ -8,12 +8,13 @@
 //! BOM and CRLF, ignores unknown keys (a newer jdk may know more), and rejects
 //! anything outside the subset with an error naming the line.
 //!
-//! `entries` is the whole format's only lexer: `parse` here reads the two keys
-//! the shim cares about, and `jdk-core::config` reads the JAVA_HOME backup
+//! `entries` is the whole format's only lexer: `parse` here reads the keys
+//! that make up [`Config`], and `jdk-core::config` reads the JAVA_HOME backup
 //! keys through the same iterator. One file, one notion of what it says.
 //!
-//! v0.1 keys: `vendor` (default vendor for versions without one) and
-//! `auto-install` (shim behavior for a pinned-but-missing JDK).
+//! Keys: `vendor` (default vendor for versions without one), `auto-install`
+//! (shim behavior for a pinned-but-missing JDK) and `accept-license` (standing
+//! consent to proprietary vendor terms, for CI and scripts).
 
 use crate::selector::normalize_vendor;
 use crate::text::config_lines;
@@ -31,6 +32,12 @@ pub struct Config {
     pub vendor: String,
     /// What the shim does when the pinned version is not installed.
     pub auto_install: AutoInstall,
+    /// Standing consent to the terms of vendors that ship under proprietary
+    /// licenses, for hosts with no console to prompt on (CI, scripts). The
+    /// shim never acts on it — it declines those terms whatever the config
+    /// says (see `jdk install --from-shim`); only an explicit `jdk install`
+    /// reads it. Defaults to `false`: consent is never assumed.
+    pub accept_license: bool,
 }
 
 impl Default for Config {
@@ -38,6 +45,7 @@ impl Default for Config {
         Config {
             vendor: DEFAULT_VENDOR.to_string(),
             auto_install: AutoInstall::Prompt,
+            accept_license: false,
         }
     }
 }
@@ -112,6 +120,16 @@ impl<'a> Entry<'a> {
         }
     }
 
+    /// The value as a boolean, or a parse error naming the line. Quoted
+    /// `"true"` is refused rather than coerced: a flag whose only wrong
+    /// spellings read as `false` would revoke consent without saying so.
+    pub fn boolean(&self) -> Result<bool, ConfigError> {
+        match self.value {
+            Value::Bool(flag) => Ok(flag),
+            Value::Str(_) => Err(self.invalid("value must be bare true or false")),
+        }
+    }
+
     /// Rejects this line for a reason only the key's owner knows (an unknown
     /// enum value, an empty vendor).
     pub fn invalid(&self, reason: impl Into<String>) -> ConfigError {
@@ -165,6 +183,7 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
                     }
                 };
             }
+            "accept-license" => config.accept_license = entry.boolean()?,
             // Unknown keys are ignored: a config written by a newer jdk must
             // not break an older shim. `entries` still held the line to the
             // subset, so a malformed one is an error whatever its key.
@@ -225,19 +244,50 @@ mod tests {
         assert_eq!(config, Config::default());
         assert_eq!(config.vendor, "temurin");
         assert_eq!(config.auto_install, AutoInstall::Prompt);
+        assert!(!config.accept_license, "license consent is never a default");
     }
 
     #[test]
-    fn loads_both_keys() {
+    fn loads_every_key() {
         let temp = TempDir::new().unwrap();
         fs::write(
             crate::store::config(temp.path()),
-            "vendor = \"zulu\"\nauto-install = \"never\"\n",
+            "vendor = \"zulu\"\nauto-install = \"never\"\naccept-license = true\n",
         )
         .unwrap();
         let config = load(temp.path()).unwrap();
         assert_eq!(config.vendor, "zulu");
         assert_eq!(config.auto_install, AutoInstall::Never);
+        assert!(config.accept_license);
+    }
+
+    #[test]
+    fn accept_license_reads_both_booleans() {
+        assert!(parse("accept-license = true").unwrap().accept_license);
+        assert!(!parse("accept-license = false").unwrap().accept_license);
+        // Absent is the default, and the default is refusal.
+        assert!(!parse("vendor = \"zulu\"").unwrap().accept_license);
+    }
+
+    /// Anything that is not a bare boolean is an error, never a silent
+    /// `false`: this key is legal consent, so a typo must stop the run and
+    /// be fixed, not be read as the opposite of what was written.
+    #[test]
+    fn a_non_boolean_accept_license_is_an_error() {
+        for text in [
+            "accept-license = \"true\"",
+            "accept-license = \"yes\"",
+            "accept-license = \"\"",
+            "accept-license = yes",
+            "accept-license = 1",
+            "accept-license =",
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(
+                matches!(&err, ConfigError::Parse { .. }),
+                "{text:?} should be a parse error, got {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -293,6 +343,8 @@ mod tests {
         assert_eq!(found[0].string().unwrap(), "zulu");
         assert_eq!(found[1].value, Value::Bool(false));
         assert!(found[1].string().is_err(), "a boolean is not a string");
+        assert!(!found[1].boolean().unwrap());
+        assert!(found[0].boolean().is_err(), "a string is not a boolean");
         // An empty string is inside the subset; only the key decides whether
         // it means anything (`vendor = ""` is rejected below).
         assert_eq!(found[2].string().unwrap(), "");
@@ -301,14 +353,15 @@ mod tests {
     #[test]
     fn malformed_lines_error_clearly() {
         for text in [
-            "vendor",                   // no `=`
-            "vendor = zulu",            // unquoted string
-            "vendor = \"\"",            // empty
-            "vendor = \"zu\"lu\"",      // stray quote
-            "auto-install = \"maybe\"", // unknown enum value
-            "auto-install = true",      // wrong type
-            "future = [1, 2]",          // outside the subset, even if unknown
-            "[table]",                  // TOML we do not speak
+            "vendor",                    // no `=`
+            "vendor = zulu",             // unquoted string
+            "vendor = \"\"",             // empty
+            "vendor = \"zu\"lu\"",       // stray quote
+            "auto-install = \"maybe\"",  // unknown enum value
+            "auto-install = true",       // wrong type
+            "accept-license = \"true\"", // wrong type, the other way round
+            "future = [1, 2]",           // outside the subset, even if unknown
+            "[table]",                   // TOML we do not speak
         ] {
             let err = parse(text).unwrap_err();
             assert!(

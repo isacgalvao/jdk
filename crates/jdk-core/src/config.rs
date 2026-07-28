@@ -3,7 +3,7 @@
 //! exactly the flat subset that reader documents. v0.1 rewrites the known
 //! keys only: unknown keys a hand-edit added are NOT preserved.
 //!
-//! Known keys beyond the resolve-visible pair: `java-home-before` /
+//! Known keys beyond the resolve-visible ones: `java-home-before` /
 //! `java-home-before-kind`, the pre-setup JAVA_HOME backup kept for a
 //! future `setup --undo`. The resolve reader skips them as unknown — the
 //! shim never consumes them — but this writer owns them and preserves
@@ -102,10 +102,16 @@ fn emit(root: &Path, config: &Config, backup: Option<&JavaHomeBefore>) -> Result
             config.vendor
         )));
     }
+    // `accept-license` is written on every rewrite, `false` included. It is
+    // standing consent to proprietary vendor terms, so it must survive a
+    // `jdk setup` — dropping the key when it is false would be a rewrite that
+    // silently revokes it, and writing it only when true would leave "absent"
+    // meaning two different things across versions.
     let mut text = format!(
-        "vendor = \"{}\"\nauto-install = \"{}\"\n",
+        "vendor = \"{}\"\nauto-install = \"{}\"\naccept-license = {}\n",
         config.vendor,
-        config.auto_install.as_str()
+        config.auto_install.as_str(),
+        config.accept_license
     );
     if let Some(backup) = backup {
         let kind = if backup.expandable {
@@ -139,6 +145,7 @@ mod tests {
         let config = Config {
             vendor: "zulu".to_string(),
             auto_install: AutoInstall::Always,
+            accept_license: true,
         };
 
         write(temp.path(), &config).unwrap();
@@ -154,10 +161,44 @@ mod tests {
         let changed = Config {
             vendor: "corretto".to_string(),
             auto_install: AutoInstall::Never,
+            accept_license: false,
         };
         write(temp.path(), &changed).unwrap();
 
         assert_eq!(load(temp.path()).unwrap(), changed);
+    }
+
+    /// A rewrite that dropped `accept-license = true` would revoke consent
+    /// the user granted, without ever saying so — `jdk setup` rewrites this
+    /// file for reasons that have nothing to do with licenses.
+    #[test]
+    fn license_consent_survives_a_config_rewrite() {
+        let temp = TempDir::new().unwrap();
+        let consented = Config {
+            accept_license: true,
+            ..Config::default()
+        };
+        write(temp.path(), &consented).unwrap();
+
+        // The round trip a `jdk setup` performs: load, act, write back.
+        let loaded = load(temp.path()).unwrap();
+        assert!(loaded.accept_license);
+        save_java_home_before(
+            temp.path(),
+            &loaded,
+            &JavaHomeBefore {
+                value: r"C:\Program Files\Java\jdk-17".to_string(),
+                expandable: false,
+            },
+        )
+        .unwrap();
+        assert!(load(temp.path()).unwrap().accept_license);
+
+        // And `false` is written too, so revoking consent by hand takes.
+        write(temp.path(), &Config::default()).unwrap();
+        assert!(!load(temp.path()).unwrap().accept_license);
+        let text = fs::read_to_string(store::config(temp.path())).unwrap();
+        assert!(text.contains("accept-license = false"), "{text}");
     }
 
     #[test]
@@ -166,6 +207,7 @@ mod tests {
         let broken = Config {
             vendor: "zu\"lu".to_string(),
             auto_install: AutoInstall::Prompt,
+            accept_license: false,
         };
         assert!(write(temp.path(), &broken).is_err());
     }
@@ -186,6 +228,7 @@ mod tests {
         let changed = Config {
             vendor: "zulu".to_string(),
             auto_install: AutoInstall::Never,
+            accept_license: false,
         };
         write(temp.path(), &changed).unwrap();
         assert_eq!(java_home_before(temp.path()).unwrap(), Some(backup));
