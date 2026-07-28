@@ -56,11 +56,13 @@ impl Catalog {
 
     /// Best package for `selector` on this platform; selectors without vendor
     /// use `default_vendor`. Ranking is the store's: GA preferred over EA,
-    /// then the highest version. Any index failure — unreachable, unknown
-    /// vendor, or simply no matching version (the live API may know a release
-    /// a day-old index does not) — falls through to foojay, and a total miss
-    /// reports both causes. Returns the package with its [`Origin`] so the
-    /// caller can tell the user when it came from the live API.
+    /// then the highest version — and an early-access build is only eligible
+    /// at all when the selector names a pre-release. Any index failure —
+    /// unreachable, unknown vendor, or simply no matching version (the live
+    /// API may know a release a day-old index does not) — falls through to
+    /// foojay, and a total miss reports both causes. Returns the package with
+    /// its [`Origin`] so the caller can tell the user when it came from the
+    /// live API.
     pub fn find(
         &self,
         http: &Http,
@@ -74,12 +76,19 @@ impl Catalog {
         let from_index = self.find_in_index(http, &vendor, pattern, os, arch);
         match from_index {
             Ok(package) => Ok((package, Origin::Index)),
-            Err(index_err) => {
+            Err(miss) => {
                 match foojay::find(http, &self.foojay_url, &vendor, pattern, os, arch) {
                     Ok(package) => Ok((package, Origin::Foojay)),
-                    Err(foojay_err) => Err(Error::Catalog(format!(
-                        "no installable package for {vendor}@{pattern}\n  index: {index_err}\n  foojay fallback: {foojay_err}"
-                    ))),
+                    // An early-access-only line replaces the combined error:
+                    // the live API was asked for a GA build and had none
+                    // either, so its message would restate the miss in less
+                    // useful words than the selector that does resolve.
+                    Err(foojay_err) => Err(match miss {
+                        IndexMiss::EarlyAccessOnly(ea) => early_access_only(&vendor, pattern, &ea),
+                        IndexMiss::Absent(index_err) => Error::Catalog(format!(
+                            "no installable package for {vendor}@{pattern}\n  index: {index_err}\n  foojay fallback: {foojay_err}"
+                        )),
+                    }),
                 }
             }
         }
@@ -92,9 +101,11 @@ impl Catalog {
         pattern: &Version,
         os: &str,
         arch: &str,
-    ) -> Result<Package> {
-        let packages = self.vendor_packages(http, vendor, os, arch)?;
-        let candidates = packages
+    ) -> std::result::Result<Package, IndexMiss> {
+        let packages = self
+            .vendor_packages(http, vendor, os, arch)
+            .map_err(IndexMiss::Absent)?;
+        let mut candidates: Vec<(Version, bool, Package)> = packages
             .into_iter()
             .filter(|p| p.tool == "java" && p.os == os && p.arch == arch)
             .filter_map(|p| {
@@ -108,10 +119,34 @@ impl Catalog {
                 Some((version, stable, p))
             })
             .collect();
+
+        // Early access is opt-in per selector (decision D2): `matches` reads
+        // an absent pre-release as a wildcard, so without this filter a plain
+        // `27` — a line that has never had a GA build — installs tonight's
+        // nightly and says nothing. Eligibility is the release status the
+        // catalog published, the same axis the foojay query filters on, NOT
+        // `is_stable`: that one also reads the version string, and would
+        // discard GA builds whose version carries a vendor suffix (GraalVM's
+        // `21.0.5+11-jvmci-24.1-b01`).
+        if pattern.pre_release.is_none() {
+            let (ga, ea): (Vec<_>, Vec<_>) = candidates
+                .into_iter()
+                .partition(|(_, _, package)| package.release_status != ReleaseStatus::Ea);
+            // Nothing but early access: the line exists, just not as GA.
+            // Carry the best of them so the failure can name the selector
+            // that reaches it. All are EA, so ranking is the plain version.
+            if ga.is_empty()
+                && let Some(best) = ea.into_iter().map(|(version, _, _)| version).max()
+            {
+                return Err(IndexMiss::EarlyAccessOnly(best));
+            }
+            candidates = ga;
+        }
+
         pick_best(candidates).ok_or_else(|| {
-            Error::Catalog(format!(
+            IndexMiss::Absent(Error::Catalog(format!(
                 "index has no {vendor} package matching {pattern} for {os}-{arch}"
-            ))
+            )))
         })
     }
 
@@ -223,6 +258,50 @@ impl Catalog {
     }
 }
 
+/// Why the index could not answer a selector. Both outcomes fall through to
+/// the live API, but only the second can name an actionable alternative when
+/// that fails too.
+enum IndexMiss {
+    /// Unreachable, unknown vendor, or no matching version at all.
+    Absent(Error),
+    /// The line exists only as early access, which the selector did not ask
+    /// for (D2). Carries the best of those builds.
+    EarlyAccessOnly(Version),
+}
+
+/// The D2 refusal, spelled as the two commands that do work — this is where
+/// a user learns the pre-release selector exists at all.
+fn early_access_only(vendor: &str, pattern: &Version, ea: &Version) -> Error {
+    Error::Catalog(format!(
+        "{vendor}@{pattern} has no general-availability build\n  \
+         → the line is in early access: try `jdk install {vendor}@{}`\n  \
+         → list pre-release builds with `jdk available {vendor} --ea`",
+        ea_line(ea)
+    ))
+}
+
+/// The selector that reaches an early-access build: its LINE (`27-ea` for
+/// `27-ea+31`), because a bare EA selector keeps matching whatever nightly
+/// the index carries tomorrow, while a pinned build number rots out of it
+/// within days. A build whose version carries no pre-release marker at all —
+/// only its catalog status says early access — has no line to name, so it is
+/// spelled out whole.
+fn ea_line(version: &Version) -> String {
+    match version.pre_release.as_deref() {
+        Some(pre) => Version {
+            components: version.components.clone(),
+            build: None,
+            pre_release: Some(
+                pre.split_once('+')
+                    .map_or(pre, |(line, _)| line)
+                    .to_string(),
+            ),
+        }
+        .to_string(),
+        None => version.to_string(),
+    }
+}
+
 /// Shared candidate ranking (index and foojay): stable beats pre-release/EA,
 /// ties go to the higher version — the same rule
 /// `jdk_resolve::store::best_candidate` applies to installed JDKs.
@@ -258,13 +337,48 @@ mod tests {
         assert_eq!(chosen, Some("new"));
     }
 
+    /// The inverse of what this test asserted before D2: a pre-release is no
+    /// longer the fallback when nothing stable matches. `pick_best` still
+    /// ranks EA builds among themselves — it is reached only for a selector
+    /// that named a pre-release, which is what [`Catalog::find_in_index`]
+    /// now requires before an EA candidate is eligible at all.
     #[test]
-    fn pick_best_accepts_pre_release_when_nothing_stable_matches() {
-        let chosen = pick_best(vec![
+    fn pick_best_ranks_pre_releases_only_for_a_pre_release_selector() {
+        let candidates = vec![
             (v("22-ea"), false, "ea22"),
             (v("22.0.1-ea"), false, "ea2201"),
-        ]);
-        assert_eq!(chosen, Some("ea2201"));
+        ];
+        assert_eq!(pick_best(candidates), Some("ea2201"));
+
+        // The eligibility rule that gates the ranking, as `find_in_index`
+        // applies it: a plain `22` never reaches these candidates.
+        assert!(v("22").pre_release.is_none(), "the GA selector opts out");
+        assert!(
+            v("22-ea").pre_release.is_some(),
+            "naming the pre-release opts in"
+        );
+    }
+
+    #[test]
+    fn the_early_access_refusal_names_the_line_not_the_nightly() {
+        let refusal = early_access_only("temurin", &v("27"), &v("27-ea+31")).to_string();
+        assert!(
+            refusal.contains("temurin@27 has no general-availability build"),
+            "{refusal}"
+        );
+        // The suggested selector is the EA line: it still resolves tomorrow,
+        // when `+31` has been replaced by the next nightly.
+        assert!(refusal.contains("jdk install temurin@27-ea"), "{refusal}");
+        assert!(refusal.contains("jdk available temurin --ea"), "{refusal}");
+    }
+
+    #[test]
+    fn the_ea_line_drops_the_build_but_keeps_the_pre_release_label() {
+        assert_eq!(ea_line(&v("27-ea+31")), "27-ea");
+        assert_eq!(ea_line(&v("21.0.12-ea+3")), "21.0.12-ea");
+        assert_eq!(ea_line(&v("26.2-preview.1+5")), "26.2-preview.1");
+        // No pre-release marker to build a line from: quoted whole.
+        assert_eq!(ea_line(&v("27")), "27");
     }
 
     #[test]

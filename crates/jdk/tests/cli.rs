@@ -157,6 +157,38 @@ fn bare_selector_installs_the_config_vendor() {
     assert!(world.candidate("zulu@21.0.5+11").exists());
 }
 
+/// D2: a line the catalog carries only as early access is refused for a
+/// plain GA selector — no nightly arrives unannounced — and the refusal
+/// names the pre-release selector, which then installs it with no flag.
+#[test]
+fn an_early_access_only_line_is_refused_and_the_named_selector_installs_it() {
+    let server = Server::start();
+    let mut nightly = served_package(&server, "27-ea+31");
+    nightly.release_status = ReleaseStatus::Ea;
+    nightly.lts = false;
+    serve_catalog(&server, std::slice::from_ref(&nightly));
+    let world = World::at(server.url().to_string());
+
+    let output = world.jdk(&["install", "temurin@27"]);
+
+    assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
+    let refusal = stderr(&output);
+    assert!(
+        refusal.contains("no general-availability build"),
+        "{refusal}"
+    );
+    assert!(refusal.contains("jdk install temurin@27-ea"), "{refusal}");
+    assert_eq!(
+        server.hits("/dl/27-ea+31.zip"),
+        0,
+        "a refused selector downloads nothing"
+    );
+
+    let output = world.jdk(&["install", "temurin@27-ea"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(world.candidate("temurin@27-ea+31").exists());
+}
+
 #[test]
 fn uninstall_removes_a_free_candidate_and_blocks_an_in_use_one() {
     let world = World::offline();

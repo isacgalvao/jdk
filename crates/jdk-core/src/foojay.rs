@@ -105,7 +105,14 @@ pub fn find(
         if !version.matches(pattern) {
             continue;
         }
-        let stable = is_stable(release_status(pkg.release_status.as_deref()), &version);
+        let status = release_status(pkg.release_status.as_deref());
+        // The GA-only query already says this, but D2 is a rule about what
+        // may be installed, not about what a remote endpoint chose to honor:
+        // an EA build never satisfies a selector that did not name one.
+        if status == ReleaseStatus::Ea && pattern.pre_release.is_none() {
+            continue;
+        }
+        let stable = is_stable(status, &version);
         candidates.push((version, stable, pkg));
     }
     let Some(chosen) = pick_best(candidates) else {
