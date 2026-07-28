@@ -1291,26 +1291,83 @@ fn a_corrupt_bundle_sha256_blocks_and_leaves_nothing_behind() {
     assert!(leftovers.is_empty(), "nothing written: {leftovers:?}");
 }
 
+/// The security-critical branch of the self-update: the zip is served (200)
+/// but its `.sha256` sidecar 404s, so the bytes that would become the next
+/// `jdk.exe` cannot be verified. Failing open here means the updater installs
+/// whatever the release host handed it.
+///
+/// Both refusals `sidecar_sha256` can raise mention the word "sidecar", so
+/// asserting only that would be satisfied just as well by the MALFORMED-body
+/// branch below — a different code path, reached without the zip ever being
+/// verified as absent. This pins the 404 branch specifically: an explicitly
+/// routed 404 (not the server's unrouted default, which is free to change),
+/// the `Security` variant a wrong status could not produce, and the exact
+/// wording only the absent-sidecar arm emits.
 #[test]
-fn a_missing_sidecar_discards_the_downloaded_zip_as_unverifiable() {
+fn a_sidecar_that_404s_beside_a_downloadable_zip_refuses_the_update() {
     let server = Server::start();
     let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
     let route = format!("/download/v9.9.9/{asset}");
+    let sidecar_route = format!("{route}.sha256");
     server.route(&route, |_| Response::ok("zip bytes"));
-    // No `.sha256` route: the asset exists but cannot be verified.
+    server.route(&sidecar_route, |_| Response::empty(404));
     let temp = TempDir::new().unwrap();
     let version: Version = "9.9.9".parse().unwrap();
 
     let err =
         release::fetch_bundle(&http(), server.url(), &version, temp.path(), None).unwrap_err();
 
-    assert!(err.to_string().contains("sidecar"), "{err}");
+    assert!(matches!(err, Error::Security(_)), "{err}");
+    let message = err.to_string();
+    assert!(
+        message.contains(&format!("no {asset}.sha256 sidecar")),
+        "{err}"
+    );
+    assert!(
+        message.contains("refusing an unverifiable download"),
+        "{err}"
+    );
+    // The zip really was downloadable: this is the unverifiable case, not the
+    // missing-architecture one that `a_missing_release_asset_...` covers.
     assert_eq!(server.hits(&route), 1, "the zip download itself succeeded");
+    assert_eq!(server.hits(&sidecar_route), 1, "the sidecar was asked for");
     let leftovers: Vec<_> = fs::read_dir(temp.path()).unwrap().flatten().collect();
     assert!(
         leftovers.is_empty(),
-        "the unverifiable zip is discarded: {leftovers:?}"
+        "neither the zip nor its .part staging may survive: {leftovers:?}"
     );
+}
+
+/// The other half of the same guarantee, and what makes the test above
+/// specific: a sidecar that ANSWERS but carries no usable hash — an HTML
+/// interstitial from a CDN is the realistic shape — is refused with a
+/// distinguishable message and leaves nothing behind either. If the two arms
+/// ever collapsed into one (or a parse failure started yielding some default
+/// hash), this and the 404 test above could no longer both pass.
+#[test]
+fn a_sidecar_carrying_no_usable_hash_refuses_the_update() {
+    let server = Server::start();
+    let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
+    let route = format!("/download/v9.9.9/{asset}");
+    server.route(&route, |_| Response::ok("zip bytes"));
+    server.route(&format!("{route}.sha256"), |_| {
+        Response::ok("<html><body>404 not found</body></html>")
+    });
+    let temp = TempDir::new().unwrap();
+    let version: Version = "9.9.9".parse().unwrap();
+
+    let err =
+        release::fetch_bundle(&http(), server.url(), &version, temp.path(), None).unwrap_err();
+
+    assert!(matches!(err, Error::Security(_)), "{err}");
+    let message = err.to_string();
+    assert!(message.contains("malformed sha256 sidecar"), "{err}");
+    assert!(
+        !message.contains("refusing an unverifiable download"),
+        "the two refusals must stay tellable apart: {err}"
+    );
+    let leftovers: Vec<_> = fs::read_dir(temp.path()).unwrap().flatten().collect();
+    assert!(leftovers.is_empty(), "nothing written: {leftovers:?}");
 }
 
 #[test]
