@@ -675,6 +675,53 @@ fn foojay_without_sha256_is_refused() {
     assert!(err.to_string().contains("no sha256"), "{err}");
 }
 
+/// `--ea` must only ADD: the GA half of the live listing is fetched uncapped
+/// and `latest` belongs to the early-access query alone. The single combined
+/// `ea,ga` query it replaces carried the cap over the GA builds too, so the
+/// flag listed FEWER stable versions than the bare listing.
+#[test]
+fn the_ea_listing_adds_early_access_without_capping_the_ga_half() {
+    let temp = TempDir::new().unwrap();
+    let (os, arch) = current_platform();
+    let server = Server::start();
+
+    let ga = r#"{"result":[
+        {"id":"a","java_version":"21.0.4","distribution":"temurin","term_of_support":"lts","release_status":"ga","size":1},
+        {"id":"b","java_version":"21.0.5","distribution":"temurin","term_of_support":"lts","release_status":"ga","size":1}
+    ]}"#;
+    let ea = r#"{"result":[{"id":"c","java_version":"27-ea+31","distribution":"temurin","release_status":"ea","size":1}]}"#;
+    // The routing key drops the query string, so both listing queries land
+    // here; `release_status` is what tells them apart.
+    server.route("/packages", move |request: &Request| {
+        if request.path.contains("release_status=ea&") {
+            Response::ok(ea)
+        } else {
+            Response::ok(ga)
+        }
+    });
+
+    let catalog = Catalog::with_urls(temp.path(), &dead_url(), server.url());
+    let listing = catalog
+        .available(&http(), "temurin", os, arch, true)
+        .unwrap();
+
+    let versions: Vec<&str> = listing.iter().map(|entry| entry.version.as_str()).collect();
+    assert_eq!(versions, ["21.0.4", "21.0.5", "27-ea+31"]);
+
+    let requests = server.requests_to("/packages");
+    assert_eq!(requests.len(), 2);
+    assert!(
+        !requests[0].path.contains("latest="),
+        "the GA query is never capped: {}",
+        requests[0].path
+    );
+    assert!(
+        requests[1].path.contains("latest=available"),
+        "the EA query is capped to each line's latest: {}",
+        requests[1].path
+    );
+}
+
 /// A resumed download whose Content-Range declares a total over the REAL
 /// `MAX_ARCHIVE` ceiling: the ceiling trips on the header alone, before the
 /// body loop ever runs (the read loop is never entered, so the served bytes
