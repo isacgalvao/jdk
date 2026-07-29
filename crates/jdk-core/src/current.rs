@@ -53,11 +53,11 @@ pub fn retarget(root: &Path, target: &Path) -> Result<()> {
     let current = store::current(root);
     let staging = staging_path(&current);
 
-    remove_junction(&staging)?; // leftovers of a crashed swap
+    unlink(&staging)?; // leftovers of a crashed swap
     junction::create(target, &staging).map_err(Error::io("create junction", &staging))?;
 
     if let Err(swap) = atomic_rename(&staging, &current) {
-        let _ = remove_junction(&staging);
+        let _ = unlink(&staging);
         return Err(Error::io("swap junction into", &current)(swap));
     }
     Ok(())
@@ -69,11 +69,14 @@ fn staging_path(current: &Path) -> PathBuf {
     PathBuf::from(staging)
 }
 
-/// Removes a junction (only the reparse point, never the target's content).
-/// Refuses to remove anything that is not a junction.
-fn remove_junction(path: &Path) -> Result<()> {
+/// Removes a junction — the reparse point ONLY, never a byte of the JDK it
+/// points at. `Ok(false)` when there was nothing there; anything that is not a
+/// junction sitting on the path is an error, not something to delete. This is
+/// what `setup --undo` unlinks `current` with, and what [`retarget`] clears its
+/// own staging leftovers with.
+pub fn unlink(path: &Path) -> Result<bool> {
     match classify(path) {
-        Current::Absent => Ok(()),
+        Current::Absent => Ok(false),
         Current::NotJunction => Err(Error::Io {
             action: "replace",
             path: path.to_path_buf(),
@@ -82,7 +85,8 @@ fn remove_junction(path: &Path) -> Result<()> {
         Current::Junction { .. } => {
             junction::delete(path).map_err(Error::io("delete junction", path))?;
             // `delete` leaves an empty directory behind; drop it too.
-            fs::remove_dir(path).map_err(Error::io("remove", path))
+            fs::remove_dir(path).map_err(Error::io("remove", path))?;
+            Ok(true)
         }
     }
 }
@@ -188,6 +192,31 @@ mod tests {
         );
         let through = fs::read(store::current(temp.path()).join("bin").join("java.exe")).unwrap();
         assert_eq!(through, b"temurin@21.0.5");
+    }
+
+    /// The undo's junction step: the link goes, the JDK it pointed at does
+    /// not. Anything else on that path is not ours to delete.
+    #[test]
+    fn unlink_drops_the_reparse_point_and_never_the_target() {
+        let temp = TempDir::new().unwrap();
+        let jdk_a = candidate(temp.path(), "temurin@21.0.5");
+        let current = store::current(temp.path());
+        assert!(!unlink(&current).unwrap(), "nothing there yet");
+        retarget(temp.path(), &jdk_a).unwrap();
+
+        assert!(unlink(&current).unwrap());
+
+        assert_eq!(inspect(temp.path()).unwrap(), Current::Absent);
+        assert_eq!(
+            fs::read(jdk_a.join("bin").join("java.exe")).unwrap(),
+            b"temurin@21.0.5",
+            "the JDK survives the unlink untouched"
+        );
+
+        // A real directory on the path is refused, content intact.
+        fs::create_dir_all(current.join("precious")).unwrap();
+        assert!(unlink(&current).is_err());
+        assert!(current.join("precious").exists());
     }
 
     #[test]

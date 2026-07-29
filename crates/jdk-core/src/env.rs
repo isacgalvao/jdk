@@ -144,7 +144,7 @@ pub fn string_value(text: &str, vtype: RegType) -> RegValue<'static> {
 /// `REG_EXPAND_SZ`). No length ceiling — this is the registry API, not
 /// setx. Returns whether the registry changed (false = already present).
 pub fn prepend_path(key: &RegKey, shims: &Path) -> Result<bool> {
-    let write = |value: &RegValue| {
+    let set = |value: &RegValue| {
         key.set_raw_value(PATH, value)
             .map_err(|err| Error::Env(format!("cannot write Path: {err}")))
     };
@@ -154,7 +154,7 @@ pub fn prepend_path(key: &RegKey, shims: &Path) -> Result<bool> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             // Fresh hives lack a user Path; REG_EXPAND_SZ is the Windows
             // convention for it.
-            write(&string_value(&entry, RegType::REG_EXPAND_SZ))?;
+            set(&string_value(&entry, RegType::REG_EXPAND_SZ))?;
             return Ok(true);
         }
         Err(err) => return Err(Error::Env(format!("cannot read Path: {err}"))),
@@ -172,13 +172,13 @@ pub fn prepend_path(key: &RegKey, shims: &Path) -> Result<bool> {
         return Ok(false);
     }
     if text.trim().is_empty() {
-        write(&string_value(&entry, raw.vtype))?;
+        set(&string_value(&entry, raw.vtype))?;
         return Ok(true);
     }
 
-    let mut bytes = utf16_bytes(&format!("{entry};"));
+    let mut bytes = le_bytes(format!("{entry};").encode_utf16());
     bytes.extend_from_slice(&raw.bytes);
-    write(&RegValue {
+    set(&RegValue {
         bytes: bytes.into(),
         vtype: raw.vtype,
     })?;
@@ -238,24 +238,31 @@ pub fn broadcast_change() {
 
 /// UTF-16LE with the trailing NUL the registry stores for string values.
 fn encode(text: &str) -> Vec<u8> {
-    utf16_bytes(&format!("{text}\0"))
+    le_bytes(text.encode_utf16().chain(std::iter::once(0)))
 }
 
-fn utf16_bytes(text: &str) -> Vec<u8> {
-    text.encode_utf16()
-        .flat_map(|unit| unit.to_le_bytes())
-        .collect()
+/// UTF-16 units → the little-endian bytes the registry stores.
+fn le_bytes(units: impl IntoIterator<Item = u16>) -> Vec<u8> {
+    units.into_iter().flat_map(u16::to_le_bytes).collect()
 }
 
-/// Registry string bytes → text, dropping the trailing NUL(s).
-fn decode(bytes: &[u8]) -> String {
-    let units: Vec<u16> = bytes
+/// Registry string bytes → UTF-16 units, dropping the trailing NUL(s).
+fn units(bytes: &[u8]) -> Vec<u16> {
+    let mut units: Vec<u16> = bytes
         .chunks_exact(2)
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
-    String::from_utf16_lossy(&units)
-        .trim_end_matches('\0')
-        .to_string()
+    while units.last() == Some(&0) {
+        units.pop();
+    }
+    units
+}
+
+/// Registry string bytes → text. Lossy by nature (an unpaired surrogate
+/// becomes U+FFFD), so it is for inspection and comparison — never a step on
+/// the way to writing a value back.
+fn decode(bytes: &[u8]) -> String {
+    String::from_utf16_lossy(&units(bytes))
 }
 
 #[cfg(test)]
@@ -363,7 +370,7 @@ mod tests {
 
         let raw = test.key.get_raw_value(PATH).unwrap();
         assert_eq!(raw.vtype, RegType::REG_EXPAND_SZ, "type preserved");
-        let prefix = utf16_bytes(&format!("{};", shims().to_string_lossy()));
+        let prefix = le_bytes(format!("{};", shims().to_string_lossy()).encode_utf16());
         assert_eq!(
             &raw.bytes[prefix.len()..],
             &original.bytes[..],
