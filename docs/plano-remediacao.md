@@ -29,8 +29,23 @@ adiados estão registrados em **Parqueado** com a razão.
 | D2 | `jdk install 27` quando a linha só tem EA | **Falhar** e apontar o seletor EA |
 | D3 | Futuro do `jdk update` | **Endurecer**: verificação ancorada + recuperação de crash |
 | D4 | Licença proprietária da Oracle | **Consentimento explícito**: prompt + `--accept-license` |
+| D5 | Rota de verificação de assinatura no cliente | **Rota C, no sabor SSHSIG** — ver abaixo |
 | D10 | Esquema de versionamento | **`0.MINOR.PATCH` sem teto de minor**, com as superfícies de contrato desamarradas — ver abaixo |
 | D11 | O que `jdk-core` e `jdk-resolve` são | **API interna sem garantia de estabilidade**, publicadas só para viabilizar `cargo install jdk` |
+
+### D5 — Âncora de assinatura do updater
+
+Rota **C**, na forma SSHSIG: `ssh-keygen -Y sign` com uma chave ed25519 sob o
+namespace `jdk-release`, sobre o `SHA256SUMS` da release; o asset
+`SHA256SUMS.sig` acompanha, a privada vive no secret `RELEASE_SIGNING_KEY` e a
+pública é pinada no binário. O formato foi escolhido em cima da rota C genérica
+porque o assinante já existe no runner e o verificador cabe em ~200 linhas sem
+dependência nova além de `ed25519-dalek` — e porque um humano pode conferir a
+mesma assinatura com `ssh-keygen -Y verify`, sem ferramenta deste projeto.
+
+Rotação e plano de comprometimento eram a contrapartida exigida na
+recomendação; estão no `RELEASING.md`, junto da tabela dos cinco lugares onde a
+pública aparece. A rota A segue **Parqueado**.
 
 ### D10 — Esquema de versionamento
 
@@ -84,7 +99,6 @@ parar de publicar volta à mesa, e com ela o CalVer.
 
 | # | Questão | Onde |
 |---|---|---|
-| **D5** | Qual rota de verificação de assinatura no cliente | SEC-01 |
 | **D6** | `replace_existing`: chamar incondicionalmente ou deletar | DEBT-01 |
 | **D7** | Manter `-ea` bare como alvo móvel ou fixar na linha | UX-06 |
 | **D8** | Reter N builds EA no índice ou documentar a limitação | IDX-05 |
@@ -430,7 +444,7 @@ mintam de forma sincronizada.
 # v0.6.0 — Confiança e reversibilidade
 
 ### `SEC-01` · Ancorar a confiança do `jdk update`
-**🟠 Alta · M/L · ✓ · v0.6.0 · bloqueado por D5**
+**[x] · 🟠 Alta · M/L · ✓ · v0.6.0 · resolvido por D5**
 
 O pipeline emite assinatura cosign keyless e atestações SLSA desde `d20a73d`;
 `grep cosign\|sigstore\|SHA256SUMS` nos `.rs` retorna **zero**. O updater
@@ -452,10 +466,19 @@ e auditoria. Ancora o mesmo cenário por cerca de um quinto do custo da rota A,
 sem arrastar async para dentro do binário. Contra: rotação de chave e plano para
 comprometimento do secret precisam ser escritos junto.
 
+Entregue no sabor SSHSIG (D5): verificador ed25519 próprio em
+`jdk-core/src/sshsig.rs`, `SHA256SUMS` + `SHA256SUMS.sig` obrigatórios na
+release e chave pública pinada no binário — o sidecar `.sha256` deixou de ser
+consultado pelo updater. A ausência de qualquer um dos dois assets é recusa, não
+fallback, para que "não verificado" nunca seja um estado que o host da release
+possa escolher. `JDK_RELEASE_PUBKEY` existe para as fixtures herméticas e só é
+lido junto de `JDK_RELEASES`, então não há caminho em que ele reancore a fonte
+real. O cosign saiu junto (`CI-11`); a atestação SLSA ficou.
+
 ---
 
 ### `SEC-03` · Cadeia de checksum circular no `install.ps1`
-**🟠 Alta · S · ✓ · v0.6.0 · junto com SEC-01**
+**[x] · 🟠 Alta · S · ✓ · v0.6.0 · junto com SEC-01**
 
 `install.ps1:125` baixa o zip de `releases/download/$tag`; `:137` baixa o
 sidecar **da mesma base**. O SHA-256 protege contra corrupção de transporte, que
@@ -465,10 +488,20 @@ o TLS já cobre. E o vetor de entrega é
 **Correção.** Mesma âncora escolhida em D5, aplicada ao instalador; e considerar
 distribuir o instalador a partir do release assinado em vez de `master`.
 
+O instalador verifica o `SHA256SUMS` com `ssh-keygen -Y verify` contra a mesma
+chave pinada quando o `ssh-keygen` existe na máquina, e o sidecar `.sha256` só é
+baixado quando não existe âncora assinada. Os dois fallbacks restantes são fatos
+sobre a máquina ou sobre a idade da release — sem `ssh-keygen`, ou release
+anterior à v0.6.0 — nunca escolhas do host: `SHA256SUMS` presente com a
+assinatura ausente **aborta**, porque isso é stripping. O one-liner do README
+passou a servir o `install.ps1` da release (`/releases/latest/download/`), não o
+`master`. Oito casos herméticos em `.github/scripts/test_install_anchor.ps1`
+cobrem os ramos, rodando no `ci.yml`.
+
 ---
 
 ### `FEAT-01` · Desinstalador (`setup --undo` / `jdk uninstall-self`)
-**🟠 Alta · M · ✓ · v0.6.0**
+**[x] · 🟠 Alta · M · ✓ · v0.6.0**
 
 Uma ferramenta que escreve `JAVA_HOME`, prepende PATH em `HKCU\Environment` e
 cria junction precisa saber desfazer. **Metade do trabalho já existe e está
@@ -484,10 +517,20 @@ como padrão seguro, `WM_SETTINGCHANGE` no final.
 Mais urgente que auto-update: o `jdk update` conserta algo que o winget
 resolveria de graça; a ausência de desinstalador não tem contorno.
 
+Entregue como `jdk setup --undo`, com `--purge` para o store — o inverso do
+padrão `--keep-jdks` previsto acima, e pela mesma razão: manter os JDKs é o
+default seguro, então é a remoção que precisa ser pedida. O `java-home-before`
+que apodrecia passou a ser consumido de verdade, com o tipo de registro que foi
+gravado (`REG_SZ` vs `REG_EXPAND_SZ`), e é apagado depois de restaurado, para
+que um segundo `--undo` não reescreva um `JAVA_HOME` que já não é o anterior de
+ninguém. O PATH é cortado sobre o UTF-16 cru do registro, sem passar por
+`String` — expandir `%VAR%` no meio de um undo transformaria a variável do
+usuário no seu valor de hoje.
+
 ---
 
 ### `IDX-06` · Versionamento explícito do contrato do índice
-**🟡 Média · S · ✓ · v0.6.0 · consequência de D10**
+**[x] · 🟡 Média · S · ✓ · v0.6.0 · consequência de D10**
 
 `index.json` carrega `"version": 1` e **nada o consome**: não há política escrita
 sobre o que é mudança compatível, nem código que reaja a uma versão maior que a
@@ -508,29 +551,53 @@ skew de schema em vez de falhar opaco.
 **Pronto quando.** Fixture com `"version": 2` produz mensagem acionável, não
 erro de desserialização.
 
+A ordem foi o achado: `schema_skew` lê `version` e nada mais, e roda **antes**
+da desserialização estrita. O gate ingênuo — deserializar e depois olhar o
+número — é inalcançável exatamente na mudança que justifica o contrato, porque
+uma mudança de forma faz o serde falhar primeiro, e o cliente reporta "JSON
+inválido" para um índice perfeitamente válido que ele apenas não sabe ler. A
+regra escrita ficou no topo de `index.rs`: aditivo não bumpa, mudança de forma
+bumpa, e `version` mantém nome e tipo (u32) para sempre, por ser o campo que
+todo leitor futuro consulta primeiro. O `doctor` reporta skew nos dois lugares
+em que ele aparece — no cache em disco e na sonda ao índice vivo.
+
 ---
 
 ### `BUG-06` · Sem retry/backoff em nenhum passo do swap
-**🟡 Média · S · ✓ · v0.6.0**
+**[x] · 🟡 Média · S · ✓ · v0.6.0**
 
 `replace_running` faz uma tentativa por passo. Defender e EDR seguram handles em
 `.exe` recém-escritos, e `ERROR_SHARING_VIOLATION` sequer mapeia para
 `PermissionDenied`, caindo no ramo genérico (`file_ops.rs:93`). O HTTP já tem
 retry (`http.rs:90-105`); o filesystem não tem nada.
 
+O retry ficou nos passos **sem fallback**, sob um deadline único de 2s para a
+sequência inteira em vez de um por passo — um `.exe` preso por um scanner solta
+em centenas de milissegundos ou não solta, e multiplicar deadlines só faria o
+usuário esperar mais pela mesma falha. `in_use` passou a reconhecer os dois
+códigos que o Windows usa (5 e 32), que era o motivo de `ERROR_SHARING_VIOLATION`
+cair no ramo genérico.
+
 ---
 
 ### `BUG-07` · Sem atomicidade entre `jdk.exe` e shims
-**🟡 Média · S · ✓ · v0.6.0**
+**[x] · 🟡 Média · S · ✓ · v0.6.0**
 
 `update.rs:84` materializa os shims **depois** do swap e `shims.rs:105` aborta
 no primeiro tool que falhar. Estado possível: `jdk.exe` v0.6 + `java.exe` v0.6 +
 `javac.exe` v0.5.
 
+`materialize` passou a rodar em duas fases — estagia tudo, depois troca — e a
+falha de um tool virou dado em vez de abortar a varredura: o relato sai
+completo, com todos os que recusaram, em vez de nomear o primeiro e esconder os
+outros. A atomicidade real entre `jdk.exe` e o conjunto de shims continua fora
+de alcance sem transação de filesystem; o que se ganhou é que a divergência
+parcial é sempre **relatada**, nunca silenciosa.
+
 ---
 
 ### `BUG-08` · Sem caminho de volta de versão
-**🟡 Média · S · ✓ · v0.6.0**
+**[x] · 🟡 Média · S · ✓ · v0.6.0**
 
 Não existe `jdk update --version X`; `sweep_old` destrói o único artefato de
 reversão — e isso é anunciado ao usuário como feature (`update.rs:91-94`). O
@@ -538,50 +605,84 @@ reversão — e isso é anunciado ao usuário como feature (`update.rs:91-94`). 
 `--force` com remote < local faz downgrade (alcance estreito: só se rodando
 acima da latest), e o CHANGELOG descreve o comportamento errado (`DOC-01`).
 
+**Decisão: nível de mensagem, não de comando.** `jdk update --version X` não
+foi criado — seria um segundo instalador dentro do updater, e o
+`install.ps1 -Version` que já existe faz o trabalho com a mesma âncora
+assinada. O que faltava era o usuário saber disso: o skip de "acima da latest"
+e a linha pós-update passaram a nomear `install.ps1 -Version` como o caminho de
+volta, e o help do `--force` admite que ele faz downgrade quando o remoto é
+menor, em vez de descrever só a reinstalação.
+
 ---
 
 ### `BUG-09` · `jdk update` não valida que o binário é a versão anunciada
-**🟡 Média · XS · ○ · v0.6.0**
+**[x] · 🟡 Média · XS · ○ · v0.6.0**
 
 A versão vem só da URL de redirect (`release.rs:66` + `update.rs:107-115`);
 nada confere o binário baixado contra ela.
 
+Amarrado pelo nome do asset: a linha do `SHA256SUMS` assinado é procurada por
+`jdk-v<versão>-windows-<arch>.zip` exato, então uma assinatura válida de outra
+release não cobre linha nenhuma que este update vá pedir. Uma assinatura é o
+que liga a versão anunciada aos bytes, e o replay de uma release antiga morre
+aí.
+
 ---
 
 ### `BUG-10` · Teto de extração 64× maior no update
-**🟡 Média · XS · ○ · v0.6.0**
+**[x] · 🟡 Média · XS · ○ · v0.6.0**
 
 `update.rs:55` usa o `extract_zip` de 4 GiB para um bundle capado em 64 MiB,
 tendo `extract_zip_capped` disponível.
 
+Trocado por `extract_zip_capped` com 128 MiB e 64 entradas — o bundle real tem
+quatro arquivos. O teto de entradas veio junto porque o de bytes sozinho não
+segura um zip de milhares de arquivos minúsculos. O teste que acompanha derruba
+o revert: sem a troca, ele passa a extrair o que deveria recusar.
+
 ---
 
 ### `BUG-11` · Hints de antivírus e disco cheio faltam no install/update
-**⚪ Baixa · XS · ○ · v0.6.0**
+**[x] · ⚪ Baixa · XS · ○ · v0.6.0**
 
 Existem no `uninstall` e faltam exatamente onde o Windows mais morde: rename de
 `.exe` com handle preso.
 
+Resolvido por funil em vez de por chamada: `Fail::engine` passa por um
+`io_hint` único, então todo erro de I/O que chega ao usuário — de qualquer
+comando — ganha o hint sem que ninguém precise lembrar de pedi-lo. `in_use`
+sugere antivírus, e disco cheio (112 e 39) sugere espaço. **A extração ficou de
+fora**, e não por esquecimento: `Error::Extract` carrega `String`, então o
+`io::Error` original já se perdeu antes do funil. Ver `BUG-19`.
+
 ---
 
 ### `BUG-12` · `remove()` colapsa todo erro em `Deferred`
-**⚪ Baixa · XS · ○ · v0.6.0**
+**[x] · ⚪ Baixa · XS · ○ · v0.6.0**
 
 `jdk/src/uninstall.rs:88`: disco cheio é reportado ao usuário como "arquivo em
 uso".
 
+Só `in_use` vira `Deferred` agora; o resto sobe como o erro que é. Era o mesmo
+defeito de `BUG-11` visto do outro lado — lá o hint certo faltava, aqui o hint
+errado era afirmado.
+
 ---
 
 ### `BUG-13` · Retry HTTP silencioso
-**⚪ Baixa · XS · ○ · v0.6.0**
+**[x] · ⚪ Baixa · XS · ○ · v0.6.0**
 
 Em link ruim o usuário vê pausa inexplicada, sem indicação de que há retry em
 curso.
 
+Anunciado a partir da **segunda** tentativa — isto é, só depois de uma já ter
+falhado — para que uma requisição saudável siga silenciosa e apenas o link ruim
+pare de parecer travamento.
+
 ---
 
 ### `BUG-15` · `doctor` não verifica o shim de `bin` que a recuperação consome
-**🟡 Média · S · ✓ · v0.6.0 · companheiro de BUG-01**
+**[x] · 🟡 Média · S · ✓ · v0.6.0 · companheiro de BUG-01**
 
 O check `jdk.exe` do `doctor` compara `bin\jdk.exe` com o binário em execução
 (`jdk/src/doctor.rs:537-567`); nada verifica `bin\jdk-shim.exe` — nem que
@@ -594,10 +695,18 @@ reporta saúde.
 **Pronto quando.** `doctor` acusa `bin\jdk-shim.exe` ausente e divergência
 entre ele e os shims materializados, com `jdk setup` como remédio apontado.
 
+O check `shim_source` cobre isso, e o remédio ficou condicionado à pergunta que
+`BUG-01` levantou: `jdk setup` só resolve quando existe um `jdk-shim.exe` irmão
+do executável em execução. Quando existe, o check fica **pendente** e aponta
+`jdk setup`; quando não existe — o caso do `jdk.exe` que já mora no store —
+falha e aponta o resgate real, `jdk setup --shim-source <caminho>` ou o
+`install.ps1`. Um `bin\jdk-shim.exe` ilegível vira nota, não veredito: não dá
+para afirmar divergência sobre bytes que não se conseguiu ler.
+
 ---
 
 ### `BUG-16` · A reconciliação de BUG-04 só dispara no caminho frio do auto-install
-**🟡 Média · S · ✓ · v0.6.0 · escopo de BUG-04**
+**[x] · 🟡 Média · S · ✓ · v0.6.0 · escopo de BUG-04**
 
 `restore_aside` é alcançado apenas dentro de `install_via_cli`
 (`jdk-shim/src/main.rs:207-215`): resolução pinada → store sem candidato →
@@ -608,6 +717,14 @@ JDK pinado — fica com `java` funcionando e sem `jdk` até reinstalar à mão.
 
 **Decisão a tomar.** Alargar o gatilho (toca o hot path do shim, estável desde
 a v0.1.0) ou documentar a fronteira como limite aceito de `BUG-04`.
+
+**Decidido: documentar.** O hot path do shim roda a cada `java` e não paga um
+syscall por um cenário que exige morrer dentro de uma janela de milissegundos;
+a fronteira está escrita em `restore_aside`, junto do que sobra ao usuário
+nesse caso (`jdk doctor` acusa, `install.ps1` restaura). Alargar o gatilho
+continua possível se a janela algum dia aparecer num relato real — o que não se
+faz é pagar por ela às cegas na única parte do produto que nunca precisou
+mudar.
 
 ---
 
@@ -664,6 +781,84 @@ tools, ou expandir o conjunto e documentar o que fica de fora.
 
 ---
 
+### `BUG-17` · O sufixo de sonda `.removing` parseia como versão
+**🟡 Média · S · ✓ · v0.7.0**
+
+O sufixo `.removing` foi escolhido para marcar um diretório como "não é mais um
+candidato", e não faz isso: `temurin@21.0.5+11.removing` parseia — o `+11.removing`
+não é numérico, então vira `pre_release`, e `21.0.5` sobra como versão —
+e `27-ea.removing` idem, por `-`. Só um triplo puro (`21.0.5.removing`) é
+recusado, porque aí o sufixo cai no ramo de componentes, que exige `u32`.
+
+Alcance real, medido: `sweep_orphans` limpa a sonda no próximo comando que
+toca o store, então o normal é ela sumir. O caso que sobra é o que a criou —
+algo segurando um handle lá dentro: `remove_dir_all` falha, o `let _ =` engole,
+e enquanto durar a sonda aparece em `jdk list` como uma versão, e um seletor
+que nomeie pre-release pode resolvê-la (`D2` protege os seletores GA, não os
+de EA).
+
+**Correção.** Sufixo que o parser de versão não aceite de forma alguma, em vez
+de um que ele aceite por acidente.
+
+---
+
+### `BUG-18` · O check `shims` do `doctor` aponta `jdk setup` onde ele não resolve
+**⚪ Baixa · XS · ✓ · v0.7.0 · contradiz BUG-15**
+
+O remédio do check `shims` é `jdk setup` incondicionalmente. Mas quando o
+executável em execução é a cópia do store e não há `bin\jdk-shim.exe` ao lado
+dele, `jdk setup` não tem de onde materializar — que é precisamente a
+distinção que o check `shim_source` de `BUG-15` passou a fazer. Dois checks do
+mesmo `doctor` dando conselhos incompatíveis sobre a mesma máquina.
+
+**Correção.** Condicionar o remédio do `shims` à mesma pergunta que o
+`shim_source` faz.
+
+---
+
+### `BUG-19` · Disco cheio na extração não ganha hint
+**🟡 Média · S · ✓ · v0.7.0 · resto de BUG-11**
+
+O funil `io_hint` de `BUG-11` cobre todo erro de I/O que chega como
+`io::Error` — e a extração não chega assim: `Error::Extract(String)`
+(`extract.rs:~101`) destrói o `io::Error` antes. Como `io::copy` funde leitura
+e escrita num só erro, nem discriminar leitor de escritor é possível hoje.
+Efeito: encher o disco durante a extração de um JDK produz a única falha de
+espaço do produto sem a linha que diz o que houve.
+
+**Correção.** Trocar o `io::copy` por um laço que saiba de qual lado veio o
+erro, e preservar o `io::Error` até o funil.
+
+---
+
+### `BUG-20` · O hint de volta pode nomear um `-Version` que o instalador recusa
+**⚪ Baixa · XS · ✓ · v0.7.0 · follow-up de BUG-08**
+
+O hint que `BUG-08` acrescentou monta `install.ps1 -Version <v>` a partir da
+versão que o updater viu. Se essa versão carregar sufixo de pre-release, o
+regex do instalador (`^v?\d+(\.\d+)*\z`) a recusa, e o caminho de volta
+oferecido não funciona. Alcance estreito de verdade: o `/releases/latest` real
+pula pre-releases, então só um `JDK_RELEASES` hermético chega lá.
+
+**Correção.** Não oferecer o `-Version` quando a versão não passa pelo mesmo
+regex que o instalador aplica.
+
+---
+
+### `BUG-21` · O remédio do `cache_integrity` re-baixa o mesmo arquivo
+**⚪ Baixa · XS · ✓ · v0.7.0**
+
+Para uma malformação publicada que **não** seja skew de schema, o check
+`cache_integrity` do `doctor` continua dizendo "apague o cache (ele re-baixa)"
+— e o que volta é byte a byte o mesmo arquivo malformado. É a mesma classe de
+defeito que o ramo de skew de `IDX-06` matou: um remédio que só faz sentido se
+a causa for local, oferecido sem saber se ela é.
+
+**Correção.** Distinguir cache corrompido localmente (onde apagar resolve) de
+índice publicado malformado (onde não resolve), como o ramo de skew já faz.
+
+---
+
 ### `DOC-02` · Guia de desinstalação e seção de antivírus/SmartScreen
 **🟡 Média · XS · ✓ · v0.7.0**
 
@@ -709,7 +904,7 @@ remover as duas funções e a afirmação. Não deixar como está.
 ---
 
 ### `DEBT-02` · `fetch_archive_capped` é `pub` num crate publicado
-**⚪ Baixa · S · ✓ · rebaixado por D11**
+**[x] · ⚪ Baixa · S · ✓ · rebaixado por D11**
 
 `jdk-core/src/download.rs:42-43` com `publish = true`. Num commit intitulado
 *"seams on the security-critical paths"*, o teto de 4 GiB deixou de ser
@@ -724,15 +919,27 @@ deve ser invariante do crate, não convenção de quem chama.
 **Correção.** Mover a capacidade de mentir o `Content-Length` para o
 `test-support`, que não é publicado.
 
+Feito: `fetch_archive_capped` é privada, `fetch_archive` é a única porta, e
+`Response::declaring` no `test-support` serve o tamanho falso. Efeito colateral
+bom — o teste do teto declarado passou a exercitar o `MAX_ARCHIVE` real através
+da porta pública, em vez de um cap de 1 KiB através da seam. O parâmetro
+sobrevive privado para o único teto que não é alcançável de outro jeito: a
+contagem corrente sobre um corpo de tamanho desconhecido, que a 4 GiB ninguém
+roda.
+
 ---
 
 ### `DEBT-03` · `copy_shim_with` — seam que não protege nada
-**🟡 Média · XS · ✓**
+**[x] · 🟡 Média · XS · ✓**
 
 `jdk-core/src/shims.rs:75-91` descarta o `u64` que injeta, e o ramo que alcança
 é inalcançável em produção (`CopyFileExW` erra, não trunca). O teste
 `copy_shim_detects_a_short_copy` verifica a checagem contra um fake que ele
 mesmo escreveu com 3 bytes.
+
+Seam e testes tautológicos removidos — nada os substituiu, que era o ponto: o
+ramo não existia em produção e a cobertura provava apenas que o fake do teste
+tinha o tamanho que o teste lhe deu.
 
 ---
 
@@ -774,7 +981,7 @@ são a mesma lógica em dois lugares, apesar do commit `e204491`
 ---
 
 ### `DEBT-07` · `Origin` — enum público para um `eprintln`
-**⚪ Baixa · S · ✓**
+**[x] · ⚪ Baixa · S · ✓**
 
 `a877568` introduziu enum público, mudança de assinatura em `Catalog::find`,
 quatro call sites e churn de teste para produzir uma linha de stderr que o
@@ -788,6 +995,15 @@ verificado", o que é falso — a verificação é obrigatória nos dois caminho
 (`foojay.rs:125-130`). A diferença é de confiança temporal, não de ausência.
 
 **Correção.** Restringir a mensagem ao caso EA, ou torná-la acionável.
+
+Restringida ao EA resolvido ao vivo, e o texto consertado: a linha não fala mais
+em "unverified", porque o sha256 é obrigatório nos dois caminhos — a diferença
+é qual catálogo nomeou o build, nunca se os bytes foram conferidos. A GA
+recém-lançada, que era o caso que sujava o `java` em CI, ficou silenciosa. O
+enum `Origin` **permaneceu**: o caller continua sem outro jeito de saber quem
+respondeu (o `Package` é idêntico nos dois caminhos), e trocá-lo por `bool`
+num retorno de tupla seria pior de ler. O que mudou é que ele agora carrega uma
+afirmação verdadeira e rara. Dois e2e em `cli.rs` pinam os dois lados.
 
 ---
 
@@ -927,7 +1143,7 @@ histórico de `bcf35cb`.
 ---
 
 ### `CI-09` · `RELEASING.md` é débito de automação
-**🟡 Média · S · ✓**
+**[x] · 🟡 Média · S · ✓**
 
 188 linhas, ~21 ações manuais, §4 duplicando o CI, escrito **um dia antes** de
 duas das quatro releases. Cai para o essencial — semver, changelog, tag — com o
@@ -945,28 +1161,49 @@ do índice tem número próprio (`IDX-06`) e que as libs não têm contrato (D11
 Registro justo: `RELEASING.md` é honesto onde documenta domínio — "não use tag
 RC", recuperação de publish parcial.
 
+Resolvido sem o `scripts/release.ps1`: a tabela de D10 entrou no lugar da regra
+ancorada em 1.0, o §4 parou de reescrever o CI, o §6 passou a descrever os
+quatro jobs e o `environment` ficou registrado como pré-requisito do release. O
+script **não foi criado por decisão** — a automação local que o mantenedor já
+usa cobre a sequência, e um script no repositório seria uma terceira cópia da
+mesma verdade, ao lado do workflow e do checklist. O que ficou honesto e
+específico (sem tag RC, recuperação de publish parcial, contrato do updater e
+gestão de chave) permaneceu.
+
 ---
 
 ### `CI-10` · Três detectores sobre o mesmo banco RustSec
-**🟡 Média · XS · ✓**
+**[x] · 🟡 Média · XS · ✓**
 
 `cargo audit` no release, `cargo deny` no CI, `cargo auditable` no build — e os
 dois primeiros em jobs **disjuntos**, então nenhum pipeline roda os dois. Ficar
 com `cargo deny`, que já cobre advisories, licenças e fontes.
 
+`cargo audit` saiu do release, e do install de ferramentas junto. O
+`cargo auditable` ficou: embutir o SBOM no binário é outra função, e é a que
+permite cruzar o que foi publicado com um advisory depois, fora deste pipeline.
+Como o job `gates` reusa o `ci.yml`, o `deny` passou a cobrir também o commit
+taggeado — o que nenhum dos dois fazia antes.
+
 ---
 
 ### `CI-11` · Duas cadeias Sigstore redundantes
-**🟡 Média · XS · ✓**
+**[x] · 🟡 Média · XS · ✓**
 
 `sign-blob` + `attest-build-provenance` da mesma identidade OIDC no mesmo job.
 Manter uma. Decidir junto com `SEC-01`: se a rota C for adotada, o cosign passa
 a ser puramente de auditoria e uma cadeia basta.
 
+D5 adotou a rota C, então o cosign saiu inteiro e a atestação SLSA ficou. As
+duas assinaturas que sobraram respondem perguntas diferentes: a SSHSIG diz "foi
+esta a release que o mantenedor cortou", verificável offline contra uma chave
+compilada no cliente, e a atestação diz "foi construída aqui, a partir desta
+fonte". Sem sobreposição.
+
 ---
 
 ### `CI-12` · Provenance emitida do mesmo job que faz o build
-**🟡 Média · S · ✓**
+**[x] · 🟡 Média · S · ✓**
 
 `release.yml:30-37` concede `id-token: write` + `attestations: write` ao mesmo
 job que roda `cargo build` — qualquer `build.rs` na árvore executa com o token
@@ -975,20 +1212,38 @@ OIDC no ambiente. É provenance L2 apresentada como L3.
 **Correção.** Separar build (sem permissões) de assinatura (job com OIDC
 consumindo o artifact).
 
+Separados: `build` roda todo o cargo com o token read-only do workflow e sobe o
+`dist` como artifact; `release` baixa esse artifact, assina, atesta e publica, e
+não compila nada. Nenhum `build.rs` volta a ver o token OIDC nem a chave de
+assinatura. O dry-run por `workflow_dispatch` para depois do `build`.
+`publish-crates` continua compilando — o `cargo publish` roda um verification
+build com o token no ambiente — e isso é inseparável, porque o token precisa
+estar lá para o upload que o build antecede; o `environment` de `CI-13` é o
+controle compensatório desse caso.
+
 ---
 
 ### `CI-13` · Token do crates.io sem `environment:`
-**🟡 Média · XS · ✓**
+**[x] · 🟡 Média · XS · ✓**
 
 `release.yml:230-248`; não há um único `environment:` em todo `.github/`. Secret
 estático de vida longa publica código executável para terceiros, enquanto se usa
 OIDC keyless para assinar blobs. Trusted Publishing (OIDC) no crates.io, ou no
 mínimo `environment: release` com protection rule.
 
+Ficou o mínimo: `environment: release` declarado no `publish-crates`, e o
+environment criado no GitHub com deployment branch policy restrita às tags
+`v*` — nada fora de uma tag consegue pedir o token. **Mover o
+`CARGO_REGISTRY_TOKEN` para dentro do environment é ação do mantenedor**, não
+do arquivo: enquanto ele viver como secret do repositório, o `environment:` dá
+o registro de auditoria e a política de branch, mas não o escopo. Trusted
+Publishing continua a versão melhor deste item, quando o crates.io o oferecer
+para este fluxo.
+
 ---
 
 ### `CI-14` · Dependabot com `patterns: "*"`
-**🟡 Média · XS · ✓**
+**[x] · 🟡 Média · XS · ✓**
 
 `.github/dependabot.yml:19-26` levou `zip 2.4.2 → 8.6.0` — **seis majors da
 biblioteca de extração** — num PR agrupado de 9 crates, e `extract.rs` não foi
@@ -1002,10 +1257,21 @@ arquitetura, não de processo.
 **Correção.** Dois grupos: `[patch, minor]` agrupado com automerge, majors
 individuais.
 
+Um grupo `cargo-patch-minor` restrito a `[patch, minor]`; o que fica de fora
+não é agrupado, e é isso que torna cada major um PR seu — não há segundo grupo
+a escrever. O automerge é um workflow disparado por `workflow_run` do `ci`
+concluído: sem branch protection e sem a flag de auto-merge, o portão é
+literalmente "o ci deste commit passou". Ele re-deriva tudo pela API — PR do
+mesmo repositório, autor dependabot, e os `update-type` da mensagem de commit,
+que é a mesma metadata que o `dependabot/fetch-metadata` lê e que não está
+disponível no contexto de `workflow_run`. O merge usa `--match-head-commit`,
+então um push que chegue no meio do job não é mergeado com o aval de um ci que
+não o viu. Sem metadata, sem merge.
+
 ---
 
 ### `CI-15` · Regexp de identidade do cosign sem âncora de ref
-**⚪ Baixa · XS · ✓⚠**
+**[x] · ⚪ Baixa · XS · ✓⚠ · sem objeto**
 
 `release.yml:213` e `RELEASING.md:145` usam
 `'^https://github.com/isacgalvao/jdk/.github/workflows/release.yml@'` sem `$`.
@@ -1014,6 +1280,10 @@ individuais.
 `if: github.event_name == 'push' && github.ref_type == 'tag'`
 (`release.yml:154-178`), então não há caminho para assinar de um branch. Ancorar
 por higiene.
+
+**Sem objeto.** O regexp saiu junto com o cosign (`CI-11`), então não há mais o
+que ancorar. Resolvido por consequência, não por correção — fica registrado
+para que uma releitura do item não vá procurar a linha no workflow.
 
 ---
 
@@ -1190,12 +1460,51 @@ zip em silêncio. O updater compila pedindo `-arm64.zip` que pode nunca existir;
 
 ---
 
+### `DEBT-16` · `remove_running` sem retry, ao lado de um `replace_running` retriado
+**⚪ Baixa · XS · ✓ · v0.7.0 · assimetria de BUG-06**
+
+`BUG-06` deu retry aos passos do swap que não têm fallback, e `remove_running`
+ficou de fora — mesma família de erro (handle preso por scanner), mesma
+ausência de plano B, uma tentativa só. O `in_use` que `BUG-06` corrigiu já
+reconhece os dois códigos, então o material para herdar o comportamento está
+pronto.
+
+**Correção.** Mesmo deadline compartilhado do `replace_running`, ou uma razão
+escrita para a assimetria.
+
+---
+
+### `DEBT-17` · `write`/`emit` do config sem prova de round-trip no backup legado
+**⚪ Baixa · XS · ○**
+
+O quoting de `text.rs` cobre o que é **escrito hoje**, então um `#` no
+`java-home-before` gravado agora volta inteiro. O que não tem prova é o backup
+**legado** — gravado antes do quoting existir, que é exatamente o caso que
+`BUG-02` descreveu. Um round-trip sobre esse formato antigo fecharia a única
+ponta que restou daquele defeito.
+
+---
+
 ### `DEBT-15` · `package.size` indexado e nunca usado como teto
 **⚪ Baixa · XS · ○**
 
-`fetch_archive_capped` compara contra `MAX_ARCHIVE = 4 GiB`
-(`download.rs:17`), cujo próprio comentário admite que JDKs reais ficam abaixo
-de 1 GiB. O bound justo já está no índice.
+`fetch_archive` compara contra `MAX_ARCHIVE = 4 GiB` (`download.rs:17`), cujo
+próprio comentário admite que JDKs reais ficam abaixo de 1 GiB. O bound justo
+já está no índice.
+
+---
+
+### `BUG-22` · `release_status` desconhecido no índice parseia como GA
+**🟡 Média · S · ○**
+
+`foojay.rs` mapeia `Some("ea") => Ea` e **tudo o mais** para `Ga`
+(`_ => ReleaseStatus::Ga`). Um status novo publicado pelo gerador — ou pela
+API — vira GA silencioso no cliente, que é a direção errada de falhar para o
+campo que decide o que `D2` deixa instalar sem o usuário pedir. Herdado da
+arbitragem da v0.5.0, não arquivado à época.
+
+**Correção.** Tratar desconhecido como não-GA, ou recusar o registro, mas não
+promovê-lo.
 
 ---
 
@@ -1229,6 +1538,28 @@ de 1 GiB. O bound justo já está no índice.
 
 O bullet 2 (o teste do rollback) foi fechado pelo argumento de impossibilidade
 documentado em `file_ops.rs`, não por um teste.
+
+---
+
+### `TST-06` · `--force` sem e2e, agora que o help anuncia o downgrade
+**⚪ Baixa · XS · ✓ · v0.7.0 · dívida de BUG-08**
+
+`BUG-08` passou a **anunciar** no help que `--force` faz downgrade quando o
+remoto é menor. O que existe para sustentar essa frase é o unit de `decide`;
+nenhum e2e roda o `--force` de ponta a ponta. Uma promessa nova no help sem um
+teste que a exerça é a definição de dívida de teste.
+
+---
+
+### `TST-07` · A exceção `--accept-license` + `--from-shim` sem teste do argv real
+**🟡 Média · S · ○**
+
+O shim nunca repassa consentimento ambiente — decisão de `UX-02`, e a razão
+está escrita. O que falta é um teste que pine o **argv real** com que o shim
+invoca o `jdk install`, e não apenas a função de decisão: hoje um refactor que
+acrescentasse `--accept-license` a essa linha de comando passaria por todos os
+testes. Fecha com um gêmeo proprietário do e2e de `auto_install`. Herdado da
+arbitragem da v0.5.0, não arquivado à época.
 
 ---
 
@@ -1285,10 +1616,15 @@ ordenação observável, `DEBT-12` remove campos do índice. Com D10 e `IDX-06`,
 |---|---|
 | `javaw` GUI shim | Roadmap desde a v0.1; sem demanda registrada. Reavaliar depois de `FEAT-02` trazer usuários |
 | Maven `toolchains.xml` | Idem |
-| Rota A de `SEC-01` (Sigstore nativo) | Custo L e arrasta async; só se D5 rejeitar a rota C |
+| Rota A de `SEC-01` (Sigstore nativo) | Custo L e arrasta async; D5 escolheu a rota C, então continua parqueada |
 | Remover Oracle do catálogo | Descartado por D4 — consentimento explícito resolve sem cortar a feature |
 | Reescrever `natural_cmp` isoladamente | Sem valor sem `DEBT-09`; o remendo atual é correto |
 | Suporte a Linux/macOS | Fora do posicionamento. Formalizar com `CI-18` em vez de deixar ambíguo |
+| Anúncio de retry nomeando o destino quando o preso é o staging | Cosmético; o usuário age igual nos dois casos |
+| Linhas de retry intercaladas com a barra do indicatif | Cosmético; a barra some quando stderr não é terminal, que é onde o retry mais aparece |
+| TOCTOU entre o rename e a extração no `update` | Mesma fronteira de confiança do usuário — quem escreve no diretório já roda como ele. Limite aceito, não defeito |
+| Gate de CI para a regra do `[workspace.dependencies]` | A invariante ("toda dep de 2+ crates é herdada") foi verificada por script na v0.6.0 e vale hoje; manter por convenção. O verificador não foi commitado — um gate para uma regra de seis manifestos custaria mais que relê-los |
+| `setup --yes` sem `--purge` aceito sem efeito | Inofensivo e coerente com o resto do `setup`, que também aceita `--yes` sozinho |
 
 ---
 
@@ -1315,11 +1651,23 @@ garantias antes de consumi-las". Depois `SEC-03`, `BUG-06` a `BUG-13`,
 `BUG-15` e `BUG-16`.
 Oportunisticamente: `DEBT-02`, `DEBT-03`, `DEBT-07`, `CI-08` a `CI-14`.
 
+**Fechada.** Saiu na ordem acima, em cinco lotes. `CI-15` fechou por
+consequência (o cosign saiu com `CI-11`) e `CI-09` fechou sem o
+`scripts/release.ps1` que previa. Nenhum item da v0.6.0 ficou aberto; os dez
+que a execução levantou estão abaixo.
+
 ## v0.7.0
 
 `FEAT-02` e `CI-06`/`CI-07` juntos — winget derruba boa parte do custo de
 manutenção do resto, e o instalador em CI é o item que mais barato compra tempo
 de volta. Depois `FEAT-03`, `BUG-14`, `DOC-02`, `DOC-03`, `TST-05`.
+
+Os itens que a v0.6.0 levantou entram antes disso quando tocarem a mesma área.
+Verificados no código, prontos para execução: `BUG-17` (a sonda `.removing`
+parseando como versão é o de maior alcance — chega à listagem e à resolução),
+`BUG-19`, `BUG-18`, `BUG-21`, `DEBT-16`, `BUG-20` e `TST-06`. Os três herdados
+da arbitragem da v0.5.0 — `BUG-22`, `DEBT-17`, `TST-07` — precisam de
+verificação no código antes de entrar numa ordem: estão marcados `○`.
 
 ---
 
