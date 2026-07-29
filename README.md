@@ -62,12 +62,54 @@ Windows registry, junctions and `.exe` shims, and does not compile elsewhere.
 **PowerShell one-liner** — no admin, no reboot:
 
 ```powershell
-irm https://raw.githubusercontent.com/isacgalvao/jdk/master/install.ps1 | iex
+irm https://github.com/isacgalvao/jdk/releases/latest/download/install.ps1 | iex
 ```
 
-The installer downloads the release for your architecture, verifies its
-SHA-256, and runs `jdk setup` once to register `JAVA_HOME`, prepend the store
-to your `PATH` and materialize the shims.
+That URL serves the installer **from the latest release**, not from a branch:
+the script you pipe into `iex` is one of the assets covered by the release
+signature, rather than whatever `master` happens to hold right now.
+
+The installer downloads the release for your architecture, checks the
+signature over its `SHA256SUMS` against the key below, verifies the zip's
+SHA-256 against the line it covers, and runs `jdk setup` once to register
+`JAVA_HOME`, prepend the store to your `PATH` and materialize the shims. That
+signature check needs `ssh-keygen` (shipped with Windows since 10 1809); if
+it is missing, the installer warns and falls back to the per-file checksum,
+which catches a corrupt download but not a substituted one. A signature that
+is present and does not verify always aborts — as does a release serving
+`SHA256SUMS` without its signature.
+
+<details>
+<summary><b>Verifying a release by hand</b></summary>
+
+<br>
+
+Every release since v0.6.0 ships `SHA256SUMS` and a detached `SHA256SUMS.sig`,
+an SSH signature made with this key:
+
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKufZs1YJGeiBZsIVZSpxMIR/1hmAu1/biqqKJzgDxu7 jdk-release-2026
+```
+
+`jdk update` has that key compiled in and refuses any release it cannot verify
+with it. To check the same thing yourself, with the release assets downloaded
+into the current directory:
+
+```bash
+echo 'release@jdk namespaces="jdk-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKufZs1YJGeiBZsIVZSpxMIR/1hmAu1/biqqKJzgDxu7' > allowed_signers
+ssh-keygen -Y verify -f allowed_signers -I release@jdk -n jdk-release \
+  -s SHA256SUMS.sig < SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+The zips also carry SLSA build-provenance attestations, which answer a
+different question — that GitHub Actions built them from this repository:
+
+```bash
+gh attestation verify jdk-vX.Y.Z-windows-x64.zip --repo isacgalvao/jdk
+```
+
+</details>
 
 <details>
 <summary><b>Other ways to install</b></summary>

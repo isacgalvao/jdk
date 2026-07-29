@@ -143,9 +143,10 @@ On the `v*` tag, `release.yml` runs two jobs:
   (SBOM embedded via `cargo auditable`) and `jdk-shim.exe` (size-gated < 1 MiB),
   x64 and best-effort arm64; assembles per-arch zips with `LICENSE` + `README.md`,
   per-file `.sha256` sidecars and an aggregate `SHA256SUMS`; scans `dist/` with
-  Defender; **signs `SHA256SUMS` keyless with cosign** (`.sigstore.json` bundle);
-  attaches **SLSA build-provenance attestations** to the zips; and publishes the
-  GitHub release with the CHANGELOG section as notes plus install/verify blocks.
+  Defender; **signs `SHA256SUMS` with `ssh-keygen -Y sign`** (`SHA256SUMS.sig`,
+  namespace `jdk-release`, key from the `RELEASE_SIGNING_KEY` secret); attaches
+  **SLSA build-provenance attestations** to the zips; and publishes the GitHub
+  release with the CHANGELOG section as notes plus install/verify blocks.
 - **publish-crates** (`needs: release`): `cargo publish` in dependency order
   **jdk-resolve → jdk-core → jdk**, waiting for each to index. Uses the
   `CARGO_REGISTRY_TOKEN` secret. `jdk-index-gen` and `test-support` are
@@ -154,13 +155,15 @@ On the `v*` tag, `release.yml` runs two jobs:
 ## 7. Verify the published release
 
 1. The GitHub release exists with the zips, `.sha256` sidecars, `SHA256SUMS`,
-   `SHA256SUMS.sigstore.json` and `install.ps1` attached.
+   `SHA256SUMS.sig` and `install.ps1` attached. **`SHA256SUMS.sig` is not
+   optional** — without it every `jdk update` from 0.6.0 on refuses this
+   release.
 2. Signature and provenance verify:
 
    ```bash
-   cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
-     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-     --certificate-identity-regexp '^https://github.com/isacgalvao/jdk/.github/workflows/release.yml@'
+   echo 'release@jdk namespaces="jdk-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKufZs1YJGeiBZsIVZSpxMIR/1hmAu1/biqqKJzgDxu7' > allowed_signers
+   ssh-keygen -Y verify -f allowed_signers -I release@jdk -n jdk-release \
+     -s SHA256SUMS.sig < SHA256SUMS
    gh attestation verify jdk-vX.Y.Z-windows-x64.zip --repo isacgalvao/jdk
    ```
 
@@ -168,9 +171,14 @@ On the `v*` tag, `release.yml` runs two jobs:
 4. A clean install works:
 
    ```powershell
-   irm https://raw.githubusercontent.com/isacgalvao/jdk/master/install.ps1 | iex
+   irm https://github.com/isacgalvao/jdk/releases/latest/download/install.ps1 | iex
    jdk --version   # must print X.Y.Z
    ```
+
+5. `jdk update` accepts the release. The check above proves the signature is
+   good; this proves the *updater* agrees, which is the part that can break on
+   its own — a key rotated in one place and not the other verifies by hand and
+   still bricks every self-update.
 
 ## 8. If something fails
 
@@ -195,6 +203,90 @@ On the `v*` tag, `release.yml` runs two jobs:
   cargo publish -p jdk
   ```
 
+## The release signing key
+
+`SHA256SUMS` is signed with an ed25519 key held in the `RELEASE_SIGNING_KEY`
+repository secret (an OpenSSH private key, no passphrase — the workflow runs
+unattended). The matching public key is **pinned in five places**, and they
+must always agree:
+
+| Where | What it is |
+|---|---|
+| `crates/jdk-core/src/release.rs` (`RELEASE_PUBKEY`) | what `jdk update` trusts |
+| `install.ps1` (`$signingKey`) | what a fresh install trusts |
+| `README.md` (twice: the displayed key and the `allowed_signers` snippet) | what a user verifying by hand trusts |
+| `RELEASING.md` § 7 | what the maintainer verifies with |
+| `.github/workflows/release.yml` (release-notes "Verify" block) | what every release page tells users to trust |
+
+The workflow materializes the secret into `$RUNNER_TEMP`, hardens its ACL,
+signs, and deletes it in a `finally` — the key never reaches the repository or
+an artifact.
+
+### Rotation
+
+A rotation is a **minor release**, never a patch: an installed `jdk` only ever
+trusts the key it shipped with, so the new key has to travel inside a release
+signed by the *old* one. Skipping that strands every existing installation.
+
+1. Generate the pair, off the runner:
+   `ssh-keygen -t ed25519 -N "" -C "jdk-release-<year>" -f jdk-release`
+2. Replace the `RELEASE_SIGNING_KEY` secret with the contents of
+   `jdk-release` (the private half). Keep the old secret value until step 5
+   succeeds.
+3. Update the public key in all five places in the table above.
+4. Release as a **minor** bump. This release is still signed with the OLD
+   key — it is what carries the new key to installed clients.
+5. Verify that a client from **before** step 4 can `jdk update` onto it, and
+   that a client from **after** can update onto the next release.
+6. Only then destroy the old private key.
+
+Never rotate and change the signing format in the same release: if an update
+fails, one of the two is at fault and there is no way to tell which from the
+error the user reports.
+
+### If the key is compromised
+
+Assume every release signed with it is suspect, including ones that look
+untouched.
+
+1. Rotate immediately, following the steps above — the compromised key still
+   signs the release that carries the replacement, because there is no other
+   way to reach installed clients. Publish it fast rather than perfectly.
+2. Delete or re-sign the affected releases. A release whose `SHA256SUMS.sig`
+   is removed is refused by every 0.6.0+ updater, which is the correct failure:
+   loud, not silent.
+3. Say so in the release notes of the rotating release and in the CHANGELOG,
+   naming the affected versions. Users who installed by hand have no other
+   signal.
+4. Revoke the runner's access path if that is how it leaked (see the
+   `RELEASE_SIGNING_KEY` secret's audit log) before re-enabling releases.
+
+## What the updater expects from a release
+
+`jdk update` reads a release through a fixed contract. Breaking any line of it
+breaks self-update for every installed client, and the client cannot be fixed
+after the fact — it is already out there.
+
+- **`/releases/latest` redirects** to `/releases/tag/v<version>`. The version
+  is read from that redirect target; GitHub does this automatically for a
+  non-draft, non-prerelease release.
+- **A release marked pre-release does not exist** as far as `latest` is
+  concerned — the redirect skips it. This is a second reason not to cut RC
+  tags, on top of the version check that already aborts them.
+- **Assets are named `jdk-v<version>-windows-<arch>.zip`**, `<arch>` being
+  `x64` or `arm64`. The name is what the signed `SHA256SUMS` line is looked up
+  by, so it is load-bearing, not cosmetic: it is what ties the announced
+  version to the bytes.
+- **`SHA256SUMS` and `SHA256SUMS.sig` are both mandatory**, at
+  `/releases/download/v<version>/`. A release missing either is refused, on
+  purpose — "unsigned" must never be a state a release host can put a client
+  into.
+- **`SHA256SUMS` covers every published asset**, one `<hash>  <name>` line
+  each. A zip with no line is refused even though it downloaded fine.
+
+The per-file `.sha256` sidecars are **not** part of this contract. `jdk update`
+ignores them; they exist for `install.ps1`'s fallback and for humans.
+
 ## Do not do
 
 - Do not push a tag whose name differs from the workspace version — the workflow
@@ -204,3 +296,6 @@ On the `v*` tag, `release.yml` runs two jobs:
   the specific failed step manually.
 - Do not hand-edit the GitHub release notes to diverge from the CHANGELOG; edit
   `CHANGELOG.md` and, if needed, re-cut.
+- Do not delete or replace `SHA256SUMS.sig` on a published release, and do not
+  edit `SHA256SUMS` after the fact — the signature stops matching and every
+  installed client refuses that release.
