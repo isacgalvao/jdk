@@ -1,11 +1,23 @@
 # Builds and publishes a jdk release. A tag push (`v*`) runs the full CI gates
-# at the tagged commit, signs the artifacts (an SSHSIG over SHA256SUMS with the
-# key `jdk update` has pinned, plus SLSA build-provenance attestations),
-# publishes a GitHub release and then the crates.io crates (jdk-resolve,
-# jdk-core, jdk, in dependency order — needs the CARGO_REGISTRY_TOKEN secret); a
-# manual run is a dry-run that runs the same gates and uploads the same
-# artifacts as workflow artifacts (unsigned), so the pipeline can be exercised
-# without cutting a release.
+# at the tagged commit, builds and packages the artifacts, signs them (an SSHSIG
+# over SHA256SUMS with the key `jdk update` has pinned, plus SLSA
+# build-provenance attestations), publishes a GitHub release and then the
+# crates.io crates (jdk-resolve, jdk-core, jdk, in dependency order — needs the
+# CARGO_REGISTRY_TOKEN secret); a manual run is a dry-run that runs the same
+# gates and uploads the same artifacts as workflow artifacts (unsigned), so the
+# pipeline can be exercised without cutting a release.
+#
+# Four jobs, and the split between the middle two is the point (CI-12): `build`
+# runs cargo — meaning it runs every build script in the dependency tree — and
+# holds nothing but read access, while `release` holds the OIDC token that mints
+# provenance and the write access that publishes, and runs no build at all. It
+# takes the artifact `build` produced. Provenance signed in the same job that
+# compiled the subject is L2 wearing L3's label.
+#
+# `publish-crates` compiles too — `cargo publish` runs a verification build —
+# and it holds the crates.io token while doing so. That one is not separable:
+# the token has to be present for the upload the build precedes. What stands in
+# for the split there is `environment: release`, which is why it is declared.
 #
 # Two signatures, two questions, no overlap (CI-11): the SSHSIG answers "is this
 # the release the maintainer cut", which a client can check offline against a
@@ -13,9 +25,13 @@
 # source". SHA256SUMS is what the first one covers, and every asset's hash is in
 # it.
 #
-# Everything runs on Windows: the shim, the Defender scan and the zips are all
-# Windows-native. aarch64 is best-effort (continue-on-error) and never blocks
-# the x64 release.
+# Advisory scanning is not here: ci.yml's `deny` job covers the same RustSec
+# database for every gate run, this one included (CI-10). `cargo auditable`
+# stays — embedding the SBOM in jdk.exe is a different job from checking it.
+#
+# Everything that touches a zip runs on Windows: the shim, the Defender scan and
+# the zips are all Windows-native. aarch64 is best-effort (continue-on-error)
+# and never blocks the x64 release.
 
 name: release
 
@@ -25,8 +41,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
-# Least privilege: the default token can only read; the job elevates to
-# contents: write for `gh release create`, which only runs on a tag.
+# Least privilege: the default token can only read. Exactly one job elevates,
+# and it is the one that neither compiles nor executes anything from the
+# dependency tree.
 permissions:
   contents: read
 
@@ -50,17 +67,14 @@ jobs:
     permissions:
       contents: read
 
-  release:
+  # Compiles and packages. Inherits the workflow's read-only token and asks for
+  # nothing more, so a build script anywhere in the tree finds no OIDC token and
+  # no write access in its environment.
+  build:
     needs: gates
     runs-on: windows-2025
-    permissions:
-      contents: write
-      # The build-provenance attestation mints its identity from the job's OIDC
-      # token. The SSHSIG over SHA256SUMS does not: it uses a long-lived key
-      # from a secret, because the client that verifies it has to be able to do
-      # so with nothing but a key compiled into itself.
-      id-token: write
-      attestations: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
     defaults:
       run:
         shell: pwsh
@@ -70,12 +84,12 @@ jobs:
       # rust-toolchain.toml pins the toolchain and lists the aarch64 target;
       # rustup auto-installs both on the first cargo call.
 
-      # cargo-auditable embeds the dependency SBOM in jdk.exe; cargo-audit
-      # fails the build on a known-vulnerable dependency.
-      - name: install cargo-auditable and cargo-audit
+      # cargo-auditable embeds the dependency SBOM in jdk.exe, so what shipped
+      # can be matched against an advisory later, off this pipeline entirely.
+      - name: install cargo-auditable
         uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2
         with:
-          tool: cargo-auditable,cargo-audit
+          tool: cargo-auditable
 
       - name: resolve release version
         id: meta
@@ -98,9 +112,6 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
           Write-Host "release version: $version"
 
-      - name: audit dependencies for known vulnerabilities
-        run: cargo audit
-
       # Pre-flight for the crates.io publish at the end of the run: packages the
       # three crates and runs their verification builds while failing is still
       # free. An upload cannot be taken back — a jdk-core that fails to package
@@ -112,9 +123,9 @@ jobs:
       - name: publish dry-run (same command the publish job runs)
         run: cargo publish --dry-run --locked -p jdk-resolve -p jdk-core -p jdk
 
-      # --locked on every build: cargo audit judged the committed Cargo.lock a
-      # step ago, and a build free to resolve something newer would embed an
-      # SBOM — and sign a binary — for a dependency graph no gate ever saw.
+      # --locked on every build: the committed Cargo.lock is what the `deny`
+      # gate judged, and a build free to resolve something newer would embed an
+      # SBOM — and have a release signed — for a dependency graph no gate saw.
       - name: build jdk.exe (x64, SBOM embedded)
         run: cargo auditable build --locked --release -p jdk --bin jdk
 
@@ -139,8 +150,13 @@ jobs:
       # (`<hash>  <name>`, lowercase — what install.ps1 reads) accompanies every
       # artifact, install.ps1 included.
       - name: assemble release artifacts
+        env:
+          # Through the environment, not interpolated into the script text:
+          # a `${{ }}` expansion is pasted in before pwsh parses the line, so
+          # its content would be code rather than data.
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          $version = '${{ steps.meta.outputs.version }}'
+          $version = $env:VERSION
           $dist = Join-Path $PWD 'dist'
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
@@ -166,8 +182,8 @@ jobs:
 
           $artifacts = Get-ChildItem $dist -File | Where-Object { $_.Extension -ne '.sha256' }
           # Per-file sidecar (install.ps1's fallback when ssh-keygen is absent)
-          # plus one aggregate SHA256SUMS — the file the signature below covers,
-          # and the only thing `jdk update` trusts.
+          # plus one aggregate SHA256SUMS — the file the release job signs, and
+          # the only thing `jdk update` trusts.
           $sums = foreach ($f in $artifacts) {
             $hash = (Get-FileHash -Algorithm SHA256 -Path $f.FullName).Hash.ToLowerInvariant()
             [IO.File]::WriteAllText("$($f.FullName).sha256", "$hash  $($f.Name)`n")
@@ -188,31 +204,85 @@ jobs:
           $filePath = (Resolve-Path -Path "dist").Path
           & $defenderPath -Scan -ScanType 3 -File $filePath -DisableRemediation
 
+      # The whole output of this job, and the only thing the release job takes
+      # from it. On a dry-run this is where the pipeline ends.
+      - name: upload workflow artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: jdk-${{ steps.meta.outputs.version }}-windows
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  # Signs and publishes. Holds the elevated permissions and runs no cargo:
+  # `dist` arrives as an artifact, and the only code executed here is
+  # ssh-keygen, the attestation action and gh.
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: windows-2025
+    permissions:
+      contents: write
+      # The build-provenance attestation mints its identity from this job's OIDC
+      # token. The SSHSIG over SHA256SUMS does not: it uses a long-lived key
+      # from a secret, because the client that verifies it has to be able to do
+      # so with nothing but a key compiled into itself.
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # For CHANGELOG.md, which becomes the release notes. No build happens on
+      # this checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: download the built artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
+        with:
+          name: jdk-${{ needs.build.outputs.version }}-windows
+          path: dist
+
       # The anchor `jdk update` verifies. `ssh-keygen` is preinstalled on
       # windows-2025, and ed25519 signing is deterministic, so this is ~10
       # lines and no extra action in the supply chain. Both artifacts are
       # mandatory from 0.6.0 on: an updater that meets a release without
       # SHA256SUMS.sig refuses it rather than falling back.
       - name: sign SHA256SUMS (SSHSIG, namespace jdk-release)
-        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
+          # Named, rather than left to fail as a null dereference three lines
+          # down: an unset secret is the likeliest thing to go wrong here and
+          # the least self-explanatory to read in a log.
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_SIGNING_KEY)) {
+            throw "the RELEASE_SIGNING_KEY secret is empty or unset - a release cannot be signed without it"
+          }
           $key = Join-Path $env:RUNNER_TEMP 'jdk-release-signing-key'
           try {
             # WriteAllText and not Set-Content or `>`: OpenSSH rejects a key
             # file that picked up CRLF or a BOM on the way to disk, and it
-            # wants the final newline the secret may not carry.
-            $pem = $env:RELEASE_SIGNING_KEY
+            # wants the final newline the secret may not carry. The CRLF can
+            # also come from the secret itself, pasted out of an editor that
+            # saved the key with Windows line endings.
+            $pem = ($env:RELEASE_SIGNING_KEY -replace "`r`n?", "`n")
             if (-not $pem.EndsWith("`n")) { $pem += "`n" }
             [IO.File]::WriteAllText($key, $pem)
             # ssh-keygen refuses a private key other accounts can read.
             icacls $key /inheritance:r /grant:r "$(whoami):(R)" | Out-Null
+            # ssh-keygen ASKS before overwriting an existing .sig and, with
+            # nothing on stdin to answer, keeps the old one and still exits 0 —
+            # so a stale signature could ride out with fresh sums.
+            Remove-Item dist/SHA256SUMS.sig -Force -ErrorAction SilentlyContinue
             ssh-keygen -Y sign -f $key -n jdk-release dist/SHA256SUMS
           } finally {
             # Off the disk before anything else runs in this job, whatever
-            # happened above.
+            # happened above — and verified, because -ErrorAction
+            # SilentlyContinue is equally happy to have deleted nothing. A
+            # throw here can mask one from the try block; a private key left
+            # on a runner is the worse of the two.
             Remove-Item $key -Force -ErrorAction SilentlyContinue
+            if (Test-Path $key) { throw "the release signing key is still at $key - refusing to go on with it on disk" }
           }
           if (-not (Test-Path dist/SHA256SUMS.sig)) {
             throw "ssh-keygen wrote no dist/SHA256SUMS.sig - the release would ship unverifiable"
@@ -222,25 +292,17 @@ jobs:
       # SLSA build provenance for the release zips, verifiable with
       # `gh attestation verify <zip> --repo isacgalvao/jdk`.
       - name: attest build provenance
-        if: github.event_name == 'push' && github.ref_type == 'tag'
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
         with:
           subject-path: dist/jdk-*.zip
 
-      - name: upload workflow artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-        with:
-          name: jdk-${{ steps.meta.outputs.version }}-windows
-          path: dist
-          if-no-files-found: error
-          retention-days: 7
-
       - name: publish GitHub release
-        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
+          # Data, not script text — same reason as the assemble step.
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
-          $version = '${{ steps.meta.outputs.version }}'
+          $version = $env:VERSION
 
           # Release notes are the CHANGELOG section for this version, verbatim.
           $lines = Get-Content CHANGELOG.md
@@ -287,19 +349,22 @@ jobs:
   # verifies every crate before uploading any of them, orders them by dependency
   # and waits for each to be indexed — so the window where a later failure can
   # leave the version half published is as narrow as cargo can make it. The dry
-  # run in the release job has already walked this exact path.
+  # run in the build job has already walked this exact path.
   #
   # Windows-native so the verification build (jdk-core/jdk are Windows-only)
   # matches the manual publish. The set is named explicitly rather than taken
   # from `--workspace`: jdk-index-gen and test-support are `publish = false` and
   # jdk-shim is not published, and naming them here means a new crate cannot
-  # reach crates.io by forgetting a manifest key. Requires the
-  # CARGO_REGISTRY_TOKEN secret (a crates.io API token) — absent it, this job
-  # fails.
+  # reach crates.io by forgetting a manifest key.
+  #
+  # `environment: release` is where CARGO_REGISTRY_TOKEN lives (CI-13): a
+  # long-lived token that can publish executable code to third parties is the
+  # one secret in this repository worth an approval gate and an audit trail of
+  # its own, and an environment is the only place Actions offers either.
   publish-crates:
     needs: release
-    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: windows-2025
+    environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
