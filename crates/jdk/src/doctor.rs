@@ -463,13 +463,14 @@ fn update_available() -> Check {
     let local: Version = env!("CARGO_PKG_VERSION")
         .parse()
         .expect("the crate version parses");
-    let (base, policy) = release::base_url();
     let quick = Retry {
         attempts: 1,
         base_delay: Duration::ZERO,
     };
-    let remote = Http::with_request_timeout(policy, quick, Duration::from_secs(3))
-        .and_then(|http| release::latest(&http, &base));
+    let remote = release::Source::resolve().and_then(|source| {
+        Http::with_request_timeout(source.policy(), quick, Duration::from_secs(3))
+            .and_then(|http| release::latest(&http, &source))
+    });
     match remote {
         Ok(remote) if remote > local => note(
             "update",

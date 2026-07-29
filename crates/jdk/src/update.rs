@@ -23,6 +23,14 @@ use std::path::Path;
 const SHIMS_LAG_BEHIND: &str =
     "the new jdk.exe is already in place; `jdk setup` converges the shims";
 
+/// Extraction ceilings for a release bundle, in place of the JDK-sized
+/// defaults [`jdk_core::extract::extract_zip`] carries: this archive holds
+/// two executables, LICENSE and README, unpacking to some 30 MiB — not the
+/// 15–30k entries and 4 GiB a real JDK justifies (BUG-10). The margin is
+/// there for growth in the bundle, not for a zip bomb.
+const MAX_UNPACKED: u64 = 128 * 1024 * 1024;
+const MAX_FILES: usize = 64;
+
 pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
     let bin = root.join("bin");
     sweep_leftovers(&bin);
@@ -32,9 +40,9 @@ pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
     let local: Version = env!("CARGO_PKG_VERSION")
         .parse()
         .expect("the crate version parses");
-    let (base, policy) = release::base_url();
-    let http = Http::new(policy).map_err(Fail::engine)?;
-    let remote = release::latest(&http, &base).map_err(Fail::engine)?;
+    let source = release::Source::resolve().map_err(Fail::engine)?;
+    let http = Http::new(source.policy()).map_err(Fail::engine)?;
+    let remote = release::latest(&http, &source).map_err(Fail::engine)?;
     if decide(&local, &remote, force) == Decision::Skip {
         eprintln!("jdk: already up to date ({local})");
         return Ok(());
@@ -53,12 +61,13 @@ pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
         }
         bar.set_position(done);
     };
-    let bundle = release::fetch_bundle(&http, &base, &remote, &staging, Some(&mut on_progress));
+    let bundle = release::fetch_bundle(&http, &source, &remote, &staging, Some(&mut on_progress));
     bar.finish_and_clear();
     let bundle = bundle.map_err(Fail::engine)?;
 
     let extracted = staging.join("stage");
-    jdk_core::extract::extract_zip(&bundle, &extracted).map_err(Fail::engine)?;
+    jdk_core::extract::extract_zip_capped(&bundle, &extracted, MAX_UNPACKED, MAX_FILES)
+        .map_err(Fail::engine)?;
     let new_cli = extracted.join("jdk.exe");
     let new_shim = extracted.join("jdk-shim.exe");
     if !new_cli.exists() || !new_shim.exists() {

@@ -23,6 +23,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use test_support::{
     Request, Response, Server, dead_url, fake_jdk_zip, package, serve_catalog, shim_binaries,
+    sshsig,
 };
 
 /// Loopback-permissive client with millisecond retries to keep tests fast.
@@ -1224,6 +1225,33 @@ fn reply_url_reports_the_post_redirect_hop() {
     assert_eq!(reply.url(), format!("{}/final", server.url()));
 }
 
+/// A release source at `base`, trusting the key `test_support::sshsig` signs
+/// with — the hermetic stand-in for the key pinned into a shipped binary.
+fn source(base: &str) -> release::Source {
+    release::Source::new(
+        base.to_string(),
+        UrlPolicy::AllowInsecureLoopback,
+        &sshsig::pubkey(),
+    )
+    .expect("the test signer's public key parses")
+}
+
+/// The dynamic signer has to be pinned to something: were it only checked
+/// against jdk-core's verifier, a shared misreading of the format would keep
+/// every test below green while no release ever verified. `ssh-keygen -Y
+/// sign` produced the committed fixture, ed25519 signing is deterministic,
+/// and this is the same key — so agreeing on these bytes means agreeing with
+/// OpenSSH.
+#[test]
+fn the_test_signer_reproduces_ssh_keygen_byte_for_byte() {
+    let sums = include_str!("../fixtures/sshsig/SHA256SUMS");
+    let recorded = include_str!("../fixtures/sshsig/SHA256SUMS.sig");
+    let signer = include_str!("../fixtures/sshsig/signer.pub");
+
+    assert_eq!(sshsig::sign(sums.as_bytes(), "jdk-release"), recorded);
+    assert_eq!(sshsig::pubkey(), signer);
+}
+
 #[test]
 fn latest_reads_the_version_from_the_releases_redirect() {
     let server = Server::start();
@@ -1231,7 +1259,7 @@ fn latest_reads_the_version_from_the_releases_redirect() {
     server.route("/latest", move |_| Response::redirect(&target));
     server.route("/tag/v9.9.9", |_| Response::ok("release page html"));
 
-    let version = release::latest(&http(), server.url()).unwrap();
+    let version = release::latest(&http(), &source(server.url())).unwrap();
 
     assert_eq!(version.to_string(), "9.9.9");
 }
@@ -1243,29 +1271,41 @@ fn latest_refuses_a_redirect_that_lands_off_a_tag() {
     server.route("/latest", move |_| Response::redirect(&target));
     server.route("/somewhere-else", |_| Response::ok(""));
 
-    let err = release::latest(&http(), server.url()).unwrap_err();
+    let err = release::latest(&http(), &source(server.url())).unwrap_err();
 
     assert!(err.to_string().contains("install.ps1"), "{err}");
 }
 
 /// The release-bundle routes for `version` on `server`: the zip under the
-/// GitHub asset path plus its `.sha256` sidecar carrying `hash`.
-fn serve_bundle(server: &Server, version: &str, payload: Vec<u8>, hash: &str) -> String {
+/// GitHub asset path, plus the signed `SHA256SUMS` that covers it.
+fn serve_bundle(server: &Server, version: &str, payload: Vec<u8>) -> String {
     let asset = format!("jdk-v{version}-windows-{}.zip", release::ARCH);
     let route = format!("/download/v{version}/{asset}");
-    let sidecar = format!("{hash}  {asset}\n");
+    let sums = format!("{}  {asset}\n", sha256_hex(&payload));
     server.route(&route, move |_| Response::ok(payload.clone()));
-    server.route(&format!("{route}.sha256"), move |_| {
-        Response::ok(sidecar.clone())
-    });
+    serve_sums(server, version, &sums, &sums);
     route
+}
+
+/// The two signature artifacts of `version`: `served` as the SHA256SUMS body
+/// and a real signature over `signed`. Passing different values for the two
+/// is how a test tampers with the sums after they were signed.
+fn serve_sums(server: &Server, version: &str, served: &str, signed: &str) {
+    let signature = sshsig::sign(signed.as_bytes(), "jdk-release");
+    let served = served.to_string();
+    server.route(&format!("/download/v{version}/SHA256SUMS"), move |_| {
+        Response::ok(served.clone())
+    });
+    server.route(&format!("/download/v{version}/SHA256SUMS.sig"), move |_| {
+        Response::ok(signature.clone())
+    });
 }
 
 #[test]
 fn fetch_bundle_downloads_and_verifies_the_release_zip() {
     let server = Server::start();
     let payload = b"release zip bytes".to_vec();
-    serve_bundle(&server, "9.9.9", payload.clone(), &sha256_hex(&payload));
+    serve_bundle(&server, "9.9.9", payload.clone());
     let temp = TempDir::new().unwrap();
     let version: Version = "9.9.9".parse().unwrap();
 
@@ -1273,7 +1313,7 @@ fn fetch_bundle_downloads_and_verifies_the_release_zip() {
     let mut on_progress = |done: u64, total: u64| events.push((done, total));
     let dest = release::fetch_bundle(
         &http(),
-        server.url(),
+        &source(server.url()),
         &version,
         temp.path(),
         Some(&mut on_progress),
@@ -1296,68 +1336,139 @@ fn fetch_bundle_downloads_and_verifies_the_release_zip() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
+/// The signature verifies, the bytes still do not match the hash it covers —
+/// a release assembled wrong, or served wrong. Blocking here is what makes
+/// the signed line an assertion about bytes rather than about a file name.
 #[test]
-fn a_corrupt_bundle_sha256_blocks_and_leaves_nothing_behind() {
+fn a_bundle_that_misses_its_signed_hash_blocks_and_leaves_nothing_behind() {
     let server = Server::start();
-    let payload = b"tampered zip bytes".to_vec();
-    // The sidecar promises the hash of DIFFERENT bytes.
-    serve_bundle(
-        &server,
-        "9.9.9",
-        payload,
-        &sha256_hex(b"what the sidecar promised"),
-    );
+    let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
+    let route = format!("/download/v9.9.9/{asset}");
+    server.route(&route, |_| Response::ok("tampered zip bytes"));
+    let sums = format!("{}  {asset}\n", sha256_hex(b"what the release promised"));
+    serve_sums(&server, "9.9.9", &sums, &sums);
     let temp = TempDir::new().unwrap();
     let version: Version = "9.9.9".parse().unwrap();
 
-    let err =
-        release::fetch_bundle(&http(), server.url(), &version, temp.path(), None).unwrap_err();
+    let err = release::fetch_bundle(&http(), &source(server.url()), &version, temp.path(), None)
+        .unwrap_err();
 
     assert!(matches!(err, Error::Checksum { .. }), "{err}");
     let leftovers: Vec<_> = fs::read_dir(temp.path()).unwrap().flatten().collect();
     assert!(leftovers.is_empty(), "nothing written: {leftovers:?}");
 }
 
-/// The security-critical branch of the self-update: the zip is served (200)
-/// but its `.sha256` sidecar 404s, so the bytes that would become the next
-/// `jdk.exe` cannot be verified. Failing open here means the updater installs
-/// whatever the release host handed it.
-///
-/// Both refusals `sidecar_sha256` can raise mention the word "sidecar", so
-/// asserting only that would be satisfied just as well by the MALFORMED-body
-/// branch below — a different code path, reached without the zip ever being
-/// verified as absent. This pins the 404 branch specifically: an explicitly
-/// routed 404 (not the server's unrouted default, which is free to change),
-/// the `Security` variant a wrong status could not produce, and the exact
-/// wording only the absent-sidecar arm emits.
+/// SEC-01's core claim: whoever serves the release does not get to say what
+/// its checksums are. The sums are edited after signing — exactly what a
+/// compromised release host can do — and the signature no longer covers them.
 #[test]
-fn a_sidecar_that_404s_beside_a_downloadable_zip_refuses_the_update() {
+fn sha256sums_edited_after_signing_are_refused_before_any_download() {
     let server = Server::start();
+    let payload = b"malicious payload".to_vec();
     let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
     let route = format!("/download/v9.9.9/{asset}");
-    let sidecar_route = format!("{route}.sha256");
-    server.route(&route, |_| Response::ok("zip bytes"));
-    server.route(&sidecar_route, |_| Response::empty(404));
+    server.route(&route, move |_| Response::ok(payload.clone()));
+    serve_sums(
+        &server,
+        "9.9.9",
+        &format!("{}  {asset}\n", sha256_hex(b"malicious payload")),
+        &format!("{}  {asset}\n", sha256_hex(b"the real release")),
+    );
     let temp = TempDir::new().unwrap();
     let version: Version = "9.9.9".parse().unwrap();
 
-    let err =
-        release::fetch_bundle(&http(), server.url(), &version, temp.path(), None).unwrap_err();
+    let err = release::fetch_bundle(&http(), &source(server.url()), &version, temp.path(), None)
+        .unwrap_err();
 
     assert!(matches!(err, Error::Security(_)), "{err}");
-    let message = err.to_string();
-    assert!(
-        message.contains(&format!("no {asset}.sha256 sidecar")),
-        "{err}"
-    );
-    assert!(
-        message.contains("refusing an unverifiable download"),
-        "{err}"
-    );
-    // The zip really was downloadable: this is the unverifiable case, not the
-    // missing-architecture one that `a_missing_release_asset_...` covers.
-    assert_eq!(server.hits(&route), 1, "the zip download itself succeeded");
-    assert_eq!(server.hits(&sidecar_route), 1, "the sidecar was asked for");
+    assert!(err.to_string().contains("does not verify"), "{err}");
+    // Ordering, not just outcome: an unverifiable release must not cost a
+    // download first.
+    assert_eq!(server.hits(&route), 0, "the zip was never fetched");
+}
+
+/// The same refusal when the signature is valid but was made by another key:
+/// the trust anchor is this key, not "any key that signed something".
+#[test]
+fn sha256sums_signed_by_another_key_are_refused() {
+    let server = Server::start();
+    let payload = b"release zip bytes".to_vec();
+    serve_bundle(&server, "9.9.9", payload);
+    let temp = TempDir::new().unwrap();
+    let version: Version = "9.9.9".parse().unwrap();
+    let stranger = release::Source::new(
+        server.url().to_string(),
+        UrlPolicy::AllowInsecureLoopback,
+        sshsig::STRANGER,
+    )
+    .unwrap();
+
+    let err = release::fetch_bundle(&http(), &stranger, &version, temp.path(), None).unwrap_err();
+
+    assert!(matches!(err, Error::Security(_)), "{err}");
+    assert!(err.to_string().contains("other than the one"), "{err}");
+}
+
+/// Anti-stripping: a release that answers for its zip but 404s on either
+/// signature artifact is refused, not downloaded. Every release from 0.6.0
+/// publishes both and the updater only moves forward, so a missing one is an
+/// anchor that was removed — the exact move a release-host compromise makes
+/// to get a downgrade to "unverified but installed".
+///
+/// Each artifact gets its own case: dropping one of the two GETs would be
+/// invisible if only the other were pinned.
+#[test]
+fn a_release_missing_either_signature_artifact_refuses_the_update() {
+    let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
+    let route = format!("/download/v9.9.9/{asset}");
+
+    for stripped in ["SHA256SUMS", "SHA256SUMS.sig"] {
+        let server = Server::start();
+        server.route(&route, |_| Response::ok("zip bytes"));
+        let sums = format!("{}  {asset}\n", sha256_hex(b"zip bytes"));
+        serve_sums(&server, "9.9.9", &sums, &sums);
+        // An explicitly routed 404, not the server's unrouted default, which
+        // is free to change.
+        server.route(&format!("/download/v9.9.9/{stripped}"), |_| {
+            Response::empty(404)
+        });
+        let temp = TempDir::new().unwrap();
+        let version: Version = "9.9.9".parse().unwrap();
+
+        let err =
+            release::fetch_bundle(&http(), &source(server.url()), &version, temp.path(), None)
+                .unwrap_err();
+
+        assert!(matches!(err, Error::Security(_)), "{stripped}: {err}");
+        let message = err.to_string();
+        assert!(message.contains("is not signed"), "{stripped}: {err}");
+        assert!(message.contains(stripped), "{stripped}: {err}");
+        assert_eq!(server.hits(&route), 0, "{stripped}: no zip was downloaded");
+        let leftovers: Vec<_> = fs::read_dir(temp.path()).unwrap().flatten().collect();
+        assert!(leftovers.is_empty(), "{stripped}: {leftovers:?}");
+    }
+}
+
+/// The zip is served and the signature verifies, but the signed sums say
+/// nothing about this asset — the shape of a valid `SHA256SUMS` lifted from
+/// another release (BUG-09: the asset name carries the version, so an older
+/// release's sums cannot cover a newer release's zip).
+#[test]
+fn a_zip_absent_from_the_signed_sums_refuses_the_update() {
+    let server = Server::start();
+    let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
+    let route = format!("/download/v9.9.9/{asset}");
+    server.route(&route, |_| Response::ok("zip bytes"));
+    let elsewhere = format!("{}  jdk-v9.9.8-windows-x64.zip\n", sha256_hex(b"zip bytes"));
+    serve_sums(&server, "9.9.9", &elsewhere, &elsewhere);
+    let temp = TempDir::new().unwrap();
+    let version: Version = "9.9.9".parse().unwrap();
+
+    let err = release::fetch_bundle(&http(), &source(server.url()), &version, temp.path(), None)
+        .unwrap_err();
+
+    assert!(matches!(err, Error::Security(_)), "{err}");
+    assert!(err.to_string().contains("does not cover it"), "{err}");
     let leftovers: Vec<_> = fs::read_dir(temp.path()).unwrap().flatten().collect();
     assert!(
         leftovers.is_empty(),
@@ -1365,55 +1476,21 @@ fn a_sidecar_that_404s_beside_a_downloadable_zip_refuses_the_update() {
     );
 }
 
-/// The other half of the same guarantee, and what makes the test above
-/// specific: a sidecar that ANSWERS but carries no usable hash — an HTML
-/// interstitial from a CDN is the realistic shape — is refused with a
-/// distinguishable message and leaves nothing behind either. If the two arms
-/// ever collapsed into one (or a parse failure started yielding some default
-/// hash), this and the 404 test above could no longer both pass.
-#[test]
-fn a_sidecar_carrying_no_usable_hash_refuses_the_update() {
-    let server = Server::start();
-    let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
-    let route = format!("/download/v9.9.9/{asset}");
-    server.route(&route, |_| Response::ok("zip bytes"));
-    server.route(&format!("{route}.sha256"), |_| {
-        Response::ok("<html><body>404 not found</body></html>")
-    });
-    let temp = TempDir::new().unwrap();
-    let version: Version = "9.9.9".parse().unwrap();
-
-    let err =
-        release::fetch_bundle(&http(), server.url(), &version, temp.path(), None).unwrap_err();
-
-    assert!(matches!(err, Error::Security(_)), "{err}");
-    let message = err.to_string();
-    assert!(message.contains("malformed sha256 sidecar"), "{err}");
-    assert!(
-        !message.contains("refusing an unverifiable download"),
-        "the two refusals must stay tellable apart: {err}"
-    );
-    let leftovers: Vec<_> = fs::read_dir(temp.path()).unwrap().flatten().collect();
-    assert!(leftovers.is_empty(), "nothing written: {leftovers:?}");
-}
-
+/// A release built for the other architecture: its SHA256SUMS is signed and
+/// covers the assets it does carry, and only this ARCH's zip is missing. That
+/// has to keep reading as the best-effort-arm64 case, never as a signature
+/// complaint — which is why the asset line is looked up only after the zip
+/// answers.
 #[test]
 fn a_missing_release_asset_names_the_arm64_best_effort_case() {
     let server = Server::start();
-    // NEITHER the zip nor the sidecar is routed — the real shape of a
-    // release without a build for this architecture, since release.yml only
-    // writes sidecars for assets it packaged.
+    let other = format!("{}  jdk-v9.9.9-windows-other.zip\n", sha256_hex(b"other"));
+    serve_sums(&server, "9.9.9", &other, &other);
     let temp = TempDir::new().unwrap();
     let version: Version = "9.9.9".parse().unwrap();
 
-    let err =
-        release::fetch_bundle(&http(), server.url(), &version, temp.path(), None).unwrap_err();
+    let err = release::fetch_bundle(&http(), &source(server.url()), &version, temp.path(), None)
+        .unwrap_err();
 
     assert!(err.to_string().contains("arm64"), "{err}");
-    let asset = format!("jdk-v9.9.9-windows-{}.zip", release::ARCH);
-    assert_eq!(
-        server.hits(&format!("/download/v9.9.9/{asset}.sha256")),
-        0,
-        "the zip's 404 settles it before any sidecar GET"
-    );
 }

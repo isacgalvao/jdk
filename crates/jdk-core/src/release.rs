@@ -1,15 +1,26 @@
 //! Self-update source: this project's own GitHub releases. The latest
 //! version is discovered from the `/releases/latest` redirect — GitHub
 //! answers it with a hop to `/releases/tag/v<version>`, so reading the final
-//! URL costs one unauthenticated GET and none of the API's rate limit — and
-//! the release zip is fetched with its mandatory `.sha256` sidecar (the one
-//! `release.yml` publishes next to every asset). A mismatch or a missing
-//! sidecar BLOCKS, same stance as [`crate::download`].
+//! URL costs one unauthenticated GET and none of the API's rate limit.
+//!
+//! What the release zip is verified against is `SHA256SUMS`, signed by
+//! `RELEASE_PUBKEY` — a key that lives in this binary, not on the release
+//! host. That is the whole point: the per-asset `.sha256` sidecar
+//! `release.yml` still publishes for `install.ps1` is served by whoever
+//! serves the zip, so it can only catch a corrupt transfer, never a
+//! substituted release. The updater does not read it.
+//!
+//! The signed line names the asset, and the asset name carries the version
+//! ([`ARCH`], `jdk-v<version>-windows-<arch>.zip`), so one signature binds
+//! the announced version to the exact bytes that become the next `jdk.exe`.
+//! Every failure BLOCKS — a release without both `SHA256SUMS` and
+//! `SHA256SUMS.sig` is refused rather than installed unverified.
 
 use crate::download::{Progress, hex};
 use crate::error::{Error, Result};
 use crate::file_ops::atomic_rename;
 use crate::http::{Http, UrlPolicy, is_loopback, url_host};
+use crate::sshsig::{self, PublicKey};
 use jdk_resolve::version::Version;
 use sha2::{Digest, Sha256};
 use std::env;
@@ -18,6 +29,15 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 
 const REPO: &str = "isacgalvao/jdk";
+
+/// The key `release.yml` signs `SHA256SUMS` with. Rotating it is a MINOR
+/// release: an updater only trusts the key it shipped with, so the new key
+/// has to reach machines in a release signed by the old one. RELEASING.md
+/// carries the procedure and the compromise plan.
+const RELEASE_PUBKEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKufZs1YJGeiBZsIVZSpxMIR/1hmAu1/biqqKJzgDxu7 jdk-release-2026";
+/// SSHSIG namespace of the release signature: what keeps a signature this key
+/// made for anything else from counting as a release.
+const NAMESPACE: &str = "jdk-release";
 
 /// Architecture of the RUNNING binary, decided at compile time — an x64 jdk
 /// emulated on an arm64 machine must keep updating to x64, so the machine's
@@ -31,8 +51,10 @@ pub const ARCH: &str = if cfg!(target_arch = "aarch64") {
 /// Ceiling for one release bundle: the real zip is ~10 MiB, so 64 MiB is
 /// generous and cheap.
 const MAX_BUNDLE: u64 = 64 * 1024 * 1024;
-/// Ceiling for the `.sha256` sidecar (one hash line).
-const MAX_SIDECAR: u64 = 1024;
+/// Ceiling for `SHA256SUMS`: one line per published asset, a handful of them.
+const MAX_SUMS: u64 = 64 * 1024;
+/// Ceiling for `SHA256SUMS.sig` (an armored ed25519 signature is ~300 bytes).
+const MAX_SIG: u64 = 4 * 1024;
 const CHUNK: usize = 64 * 1024;
 
 /// This repository's releases — the only host outside loopback the
@@ -41,44 +63,85 @@ fn default_base() -> String {
     format!("https://github.com/{REPO}/releases")
 }
 
-/// The releases base URL and the policy to reach it: `JDK_RELEASES` (trimmed,
-/// empty counts as unset) overrides the URL, and since that variable is a
-/// hermetic-test injection point — same as `JDK_INDEX`/`JDK_FOOJAY`, with no
-/// test-only switch in the production path — the override is confined to
-/// loopback, over plain http if it wants. Whoever writes the variable already
-/// runs as this user, so this is not a privilege boundary; what it denies is
-/// turning one write into a permanent hold on the binary every shim invokes,
-/// whose checksum sidecar comes from the same host as the zip. The
-/// no-override default is this repository's releases over strict https.
-pub fn base_url() -> (String, UrlPolicy) {
-    match env::var("JDK_RELEASES") {
-        Ok(value) if !value.trim().is_empty() => {
-            (value.trim().to_string(), UrlPolicy::LoopbackOnly)
-        }
-        _ => (default_base(), UrlPolicy::Strict),
-    }
+/// Where releases are fetched from, how to reach it, and the key their
+/// `SHA256SUMS` must be signed with. The three travel together because the
+/// override that may move the URL is the only thing that may move the key —
+/// see [`Source::resolve`].
+pub struct Source {
+    base: String,
+    policy: UrlPolicy,
+    key: PublicKey,
 }
 
-/// Vets an update source before a single request goes out: this repository's
-/// releases, or a loopback server. Checked here, rather than left to the
-/// policy [`base_url`] pairs with the URL, so the refusal can name the
-/// variable that caused it — the policy still guards every redirect hop, and
-/// it is the only thing standing between a loopback override and a `Location`
-/// header pointing anywhere.
-fn check_source(base: &str) -> Result<()> {
-    if base == default_base() || is_loopback(url_host(base)) {
-        return Ok(());
+impl Source {
+    /// A source with an explicit trust anchor: `key` is an OpenSSH
+    /// `ssh-ed25519 <base64> [comment]` line, the same format
+    /// `RELEASE_PUBKEY` is written in.
+    pub fn new(base: String, policy: UrlPolicy, key: &str) -> Result<Source> {
+        Ok(Source {
+            base,
+            policy,
+            key: PublicKey::parse(key)?,
+        })
     }
-    Err(Error::Security(format!(
-        "refusing {base} as the update source: JDK_RELEASES only points the updater \
-         at a loopback server (it exists for hermetic tests, not as a release mirror)"
-    )))
+
+    /// This repository's releases over strict https, verified with the pinned
+    /// key — unless `JDK_RELEASES` (trimmed, empty counts as unset) moves it.
+    ///
+    /// That variable is a hermetic-test injection point, same as
+    /// `JDK_INDEX`/`JDK_FOOJAY` and with no test-only switch in the production
+    /// path, so the override is confined to loopback, over plain http if it
+    /// wants. Whoever writes it already runs as this user, so this is not a
+    /// privilege boundary; what it denies is turning one write into a
+    /// permanent hold on the binary every shim invokes.
+    ///
+    /// `JDK_RELEASE_PUBKEY` replaces the pinned key by the same argument and
+    /// under the same confinement — a test server cannot hold the production
+    /// private key, so a hermetic release has to be signed by a test one. It
+    /// is honored ONLY together with `JDK_RELEASES`: read here, where the
+    /// override is already established, rather than wherever the key is
+    /// consumed, so there is no path on which a lone `JDK_RELEASE_PUBKEY`
+    /// re-anchors the real update source.
+    pub fn resolve() -> Result<Source> {
+        match env::var("JDK_RELEASES") {
+            Ok(value) if !value.trim().is_empty() => {
+                let key = env::var("JDK_RELEASE_PUBKEY")
+                    .ok()
+                    .filter(|key| !key.trim().is_empty())
+                    .unwrap_or_else(|| RELEASE_PUBKEY.to_string());
+                Source::new(value.trim().to_string(), UrlPolicy::LoopbackOnly, &key)
+            }
+            _ => Source::new(default_base(), UrlPolicy::Strict, RELEASE_PUBKEY),
+        }
+    }
+
+    pub fn policy(&self) -> UrlPolicy {
+        self.policy
+    }
+
+    /// Vets the source before a single request goes out: this repository's
+    /// releases, or a loopback server. Checked here, rather than left to the
+    /// policy [`Source::resolve`] pairs with the URL, so the refusal can name
+    /// the variable that caused it — the policy still guards every redirect
+    /// hop, and it is the only thing standing between a loopback override and
+    /// a `Location` header pointing anywhere.
+    fn check(&self) -> Result<()> {
+        if self.base == default_base() || is_loopback(url_host(&self.base)) {
+            return Ok(());
+        }
+        Err(Error::Security(format!(
+            "refusing {} as the update source: JDK_RELEASES only points the updater \
+             at a loopback server (it exists for hermetic tests, not as a release mirror)",
+            self.base
+        )))
+    }
 }
 
 /// The newest released version, read from where the `{base}/latest` redirect
 /// lands; the response body is discarded.
-pub fn latest(http: &Http, base: &str) -> Result<Version> {
-    check_source(base)?;
+pub fn latest(http: &Http, source: &Source) -> Result<Version> {
+    source.check()?;
+    let base = &source.base;
     let url = format!("{base}/latest");
     let reply = http.get(&url, "update", &[])?;
     let status = reply.status();
@@ -104,20 +167,27 @@ fn tag_version(url: &str) -> Option<Version> {
 }
 
 /// Downloads the `version` release zip for [`ARCH`] into `dest_dir`,
-/// verified against its `.sha256` sidecar, and returns the zip path. The
-/// bytes are hashed as they stream and staged next to the destination; the
-/// sidecar is read after the download, and a mismatch — or a sidecar that
-/// cannot be read — removes the staging and leaves nothing behind.
+/// verified against the signed `SHA256SUMS` of that release, and returns the
+/// zip path. The bytes are hashed as they stream and staged next to the
+/// destination; anything short of a signature that verifies and a matching
+/// hash removes the staging and leaves nothing behind.
+///
+/// The signature is fetched and checked BEFORE the zip: an unsigned release
+/// is the cheapest failure available, and there is no reason to spend a
+/// download discovering it.
 pub fn fetch_bundle(
     http: &Http,
-    base: &str,
+    source: &Source,
     version: &Version,
     dest_dir: &Path,
     mut progress: Option<Progress<'_>>,
 ) -> Result<PathBuf> {
-    check_source(base)?;
+    source.check()?;
+    let base = &source.base;
     let asset = format!("jdk-v{version}-windows-{ARCH}.zip");
-    let url = format!("{base}/download/v{version}/{asset}");
+    let assets = format!("{base}/download/v{version}");
+    let url = format!("{assets}/{asset}");
+    let sums = signed_sums(http, &assets, version, &source.key)?;
     fs::create_dir_all(dest_dir).map_err(Error::io("create", dest_dir))?;
 
     let reply = http.get_streaming(&url, "update", &[])?;
@@ -135,6 +205,15 @@ pub fn fetch_bundle(
             return Err(Error::Http(format!("download of {url} returned {status}")));
         }
     }
+    // Looked up only once the zip has answered 200: a release with no build
+    // for this ARCH carries no line for it either, and that case belongs to
+    // the arm64 hint above, not to a missing-line refusal.
+    let expected = sum_for(&sums, &asset).ok_or_else(|| {
+        Error::Security(format!(
+            "release v{version} serves {asset} but its signed SHA256SUMS does not \
+             cover it; refusing an unverifiable download"
+        ))
+    })?;
     let declared: u64 = reply
         .header("content-length")
         .and_then(|value| value.parse().ok())
@@ -184,17 +263,6 @@ pub fn fetch_bundle(
     file.flush().map_err(Error::io("flush", &part))?;
     drop(file);
 
-    // The sidecar comes AFTER the zip on purpose: release.yml only writes a
-    // sidecar for an asset it packaged, so a release without this ARCH
-    // 404s on both — and must surface as the zip's arm64 hint above, never
-    // as a sidecar complaint.
-    let expected = match sidecar_sha256(http, &url, version, &asset) {
-        Ok(expected) => expected,
-        Err(err) => {
-            let _ = fs::remove_file(&part);
-            return Err(err);
-        }
-    };
     let actual = hex(&hasher.finalize());
     if actual != expected {
         let _ = fs::remove_file(&part);
@@ -208,35 +276,52 @@ pub fn fetch_bundle(
     Ok(dest)
 }
 
-/// The expected hash from the `<zip url>.sha256` sidecar (`<hash>  <name>`,
-/// as release.yml writes it). Absent or unreadable is a refusal, never a
-/// warn-and-continue.
-fn sidecar_sha256(http: &Http, zip_url: &str, version: &Version, asset: &str) -> Result<String> {
-    let url = format!("{zip_url}.sha256");
-    let reply = http.get(&url, "update", &[])?;
-    match reply.status() {
-        200 => {}
-        404 => {
-            return Err(Error::Security(format!(
-                "release v{version} has no {asset}.sha256 sidecar; \
-                 refusing an unverifiable download"
-            )));
-        }
-        status => {
-            return Err(Error::Http(format!("GET {url} returned {status}")));
-        }
-    }
-    let body = reply.bytes(MAX_SIDECAR)?;
-    parse_sidecar(&body)
-        .ok_or_else(|| Error::Security(format!("malformed sha256 sidecar at {url}; refusing")))
+/// The release's `SHA256SUMS`, returned only once its detached
+/// `SHA256SUMS.sig` verifies under `key`. A release missing either file is
+/// refused rather than trusted: every release from 0.6.0 on publishes both,
+/// so their absence is not an old release the updater might meet — the update
+/// path only ever moves forward — but an anchor that was stripped.
+fn signed_sums(http: &Http, assets: &str, version: &Version, key: &PublicKey) -> Result<String> {
+    let sums = fetch_anchor(http, &format!("{assets}/SHA256SUMS"), version, MAX_SUMS)?;
+    let signature = fetch_anchor(http, &format!("{assets}/SHA256SUMS.sig"), version, MAX_SIG)?;
+    let sums = String::from_utf8(sums)
+        .map_err(|_| Error::Security(format!("SHA256SUMS of release v{version} is not text")))?;
+    let signature = String::from_utf8(signature).map_err(|_| {
+        Error::Security(format!(
+            "SHA256SUMS.sig of release v{version} is not an armored signature"
+        ))
+    })?;
+    sshsig::verify(&signature, sums.as_bytes(), key, NAMESPACE)?;
+    Ok(sums)
 }
 
-/// First token of a sidecar body when it looks like a sha256: 64 hex chars,
-/// lowercased.
-fn parse_sidecar(body: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(body).ok()?;
-    let hash = text.split_whitespace().next()?.to_ascii_lowercase();
-    (hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(hash)
+/// One of the two signature artifacts, whose absence is a security refusal
+/// naming the release rather than a bare 404.
+fn fetch_anchor(http: &Http, url: &str, version: &Version, limit: u64) -> Result<Vec<u8>> {
+    let reply = http.get(url, "update", &[])?;
+    match reply.status() {
+        200 => reply.bytes(limit),
+        404 => Err(Error::Security(format!(
+            "release v{version} is not signed ({url} is missing); refusing an \
+             unverifiable download — reinstall with install.ps1 if this persists"
+        ))),
+        status => Err(Error::Http(format!("GET {url} returned {status}"))),
+    }
+}
+
+/// The hash `sums` records for `asset`: the `<hash>  <name>` line naming it,
+/// lowercased. The name is matched exactly, so the line for
+/// `jdk-v1.2.3-windows-x64.zip` can never answer for another version's.
+fn sum_for(sums: &str, asset: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let hash = fields.next()?.to_ascii_lowercase();
+        (fields.next()? == asset
+            && fields.next().is_none()
+            && hash.len() == 64
+            && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then_some(hash)
+    })
 }
 
 #[cfg(test)]
@@ -265,27 +350,61 @@ mod tests {
         assert!(tag_version("https://host/releases/tag/").is_none());
     }
 
-    #[test]
-    fn sidecar_wants_one_sha256_token() {
-        let hash = "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f";
-        let line = format!("{}  jdk-v9.9.9-windows-x64.zip\n", hash.to_uppercase());
-        assert_eq!(parse_sidecar(line.as_bytes()).unwrap(), hash);
+    /// A source whose base is `base`; the key never matters to these tests,
+    /// so it is the pinned one.
+    fn at(base: &str) -> Source {
+        Source::new(base.to_string(), UrlPolicy::Strict, RELEASE_PUBKEY).unwrap()
+    }
 
-        assert!(parse_sidecar(b"").is_none());
-        assert!(parse_sidecar(b"not-a-hash  file.zip").is_none());
-        assert!(parse_sidecar(b"abc123  file.zip").is_none(), "too short");
+    #[test]
+    fn the_pinned_key_is_a_usable_ed25519_line() {
+        // A typo in the constant would otherwise surface only on a machine
+        // trying to update, against a release it cannot verify.
+        assert!(PublicKey::parse(RELEASE_PUBKEY).is_ok());
+    }
+
+    #[test]
+    fn sum_lines_answer_for_exactly_their_own_asset() {
+        let hash = "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f";
+        let sums = format!(
+            "{}  jdk-v9.9.9-windows-x64.zip\n{hash}  install.ps1\n",
+            hash.to_uppercase()
+        );
+        assert_eq!(sum_for(&sums, "jdk-v9.9.9-windows-x64.zip").unwrap(), hash);
+        assert_eq!(sum_for(&sums, "install.ps1").unwrap(), hash);
+
+        // BUG-09: the asset name carries the version, so a SHA256SUMS signed
+        // for another release covers no line the updater will ask for.
+        assert!(sum_for(&sums, "jdk-v9.9.8-windows-x64.zip").is_none());
+        assert!(sum_for(&sums, "windows-x64.zip").is_none(), "not a suffix");
+        assert!(
+            sum_for(&sums, "jdk-v9.9.9-windows").is_none(),
+            "not a prefix"
+        );
+
+        assert!(sum_for("", "anything").is_none());
+        assert!(sum_for("not-a-hash  install.ps1", "install.ps1").is_none());
+        assert!(
+            sum_for("abc123  install.ps1", "install.ps1").is_none(),
+            "short"
+        );
+        assert!(
+            sum_for(&format!("{hash}  install.ps1  extra"), "install.ps1").is_none(),
+            "a name with spaces is not this name"
+        );
     }
 
     #[test]
     fn update_source_is_this_repo_or_loopback() {
-        assert!(check_source(&default_base()).is_ok());
-        assert!(check_source("http://127.0.0.1:8080/releases").is_ok());
-        assert!(check_source("https://localhost:8443/releases").is_ok());
+        assert!(at(&default_base()).check().is_ok());
+        assert!(at("http://127.0.0.1:8080/releases").check().is_ok());
+        assert!(at("https://localhost:8443/releases").check().is_ok());
     }
 
     #[test]
     fn update_source_refuses_a_redirected_host() {
-        let err = check_source("https://releases.evil.example/jdk")
+        let err = at("https://releases.evil.example/jdk")
+            .check()
             .unwrap_err()
             .to_string();
         // The message has to name the variable: nothing else in the run tells
@@ -294,8 +413,16 @@ mod tests {
 
         // A host that only looks like the real one, and the real host under a
         // path that is not this repository's releases.
-        assert!(check_source("https://github.com.evil.example/isacgalvao/jdk/releases").is_err());
-        assert!(check_source("https://github.com/someone-else/jdk/releases").is_err());
+        assert!(
+            at("https://github.com.evil.example/isacgalvao/jdk/releases")
+                .check()
+                .is_err()
+        );
+        assert!(
+            at("https://github.com/someone-else/jdk/releases")
+                .check()
+                .is_err()
+        );
     }
 
     #[test]
