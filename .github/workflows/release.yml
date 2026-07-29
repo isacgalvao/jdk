@@ -268,8 +268,15 @@ jobs:
             $pem = ($env:RELEASE_SIGNING_KEY -replace "`r`n?", "`n")
             if (-not $pem.EndsWith("`n")) { $pem += "`n" }
             [IO.File]::WriteAllText($key, $pem)
-            # ssh-keygen refuses a private key other accounts can read.
-            icacls $key /inheritance:r /grant:r "$(whoami):(R)" | Out-Null
+            # ssh-keygen refuses a private key OTHER accounts can read, so
+            # `/inheritance:r` — which drops every inherited ACE — is what
+            # satisfies it; the right granted back to this one account is not
+            # part of that check. Modify and not Read: a delete needs either
+            # DELETE on the file or FILE_DELETE_CHILD on its directory, and
+            # $RUNNER_TEMP grants neither, so `(R)` left the key undeletable
+            # and the finally below could not keep its promise. `(M)` opens
+            # nothing to anyone else — the ACL still names one account.
+            icacls $key /inheritance:r /grant:r "$(whoami):(M)" | Out-Null
             # ssh-keygen ASKS before overwriting an existing .sig and, with
             # nothing on stdin to answer, keeps the old one and still exits 0 —
             # so a stale signature could ride out with fresh sums.
