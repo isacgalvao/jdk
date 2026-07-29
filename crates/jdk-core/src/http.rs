@@ -10,6 +10,7 @@
 
 use crate::error::{Error, Result};
 use std::env;
+use std::fmt::Display;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -45,7 +46,7 @@ pub enum UrlPolicy {
     /// under https. For a client whose URL an env var may move at most to a
     /// local test server — a redirect off loopback is then just another way
     /// to spend that override, and dies on the same rule
-    /// ([`crate::release::base_url`]).
+    /// ([`crate::release::Source::resolve`]).
     LoopbackOnly,
 }
 
@@ -244,10 +245,12 @@ impl Http {
             match self.send(url, component, headers, mode) {
                 Ok(response) if retryable_status(response.status().as_u16()) && !last => {
                     let wait = retry_after(&response).unwrap_or(delay).min(RETRY_AFTER_CAP);
+                    announce_retry(url, attempt, self.retry.attempts, wait, response.status());
                     thread::sleep(wait);
                 }
                 Ok(response) => return Ok(response),
-                Err(_) if !last => {
+                Err(err) if !last => {
+                    announce_retry(url, attempt, self.retry.attempts, delay, err);
                     thread::sleep(delay);
                 }
                 Err(err) => {
@@ -290,6 +293,19 @@ impl Http {
         }
         request.call()
     }
+}
+
+/// One stderr line per retry, naming what failed and how long the pause will
+/// be (BUG-13). Announced from the FIRST retry — that is, only once an
+/// attempt has already failed — so a healthy request stays silent and a bad
+/// link stops looking like a hang. stderr, not the caller: the engine has no
+/// UI, and this is the one thing a progress bar cannot express.
+fn announce_retry(url: &str, attempt: u32, attempts: u32, wait: Duration, reason: impl Display) {
+    eprintln!(
+        "jdk: {url} failed ({reason}) — retrying in {:.0?} [attempt {} of {attempts}]",
+        wait,
+        attempt + 1
+    );
 }
 
 /// 429 obeys Retry-After; 502/503/504 are gateway hiccups worth retrying.
