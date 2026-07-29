@@ -308,6 +308,287 @@ fn setup_refuses_a_foreign_java_home_without_consent_and_backs_it_up_with_yes() 
     assert!(backup.expandable, "the registry TYPE is part of the backup");
 }
 
+/// FEAT-01, end to end with the real binaries: the undo has to be the exact
+/// inverse of the setup that ran before it — same registry VALUE, same TYPE,
+/// same bytes for every PATH entry that was never jdk's — and it has to stop
+/// there, because nobody asked for the JDKs to go.
+#[test]
+fn setup_undo_hands_the_environment_back_byte_for_byte_and_keeps_the_jdks() {
+    let world = World::new();
+    let jdk = world.install_fake("temurin@21.0.5");
+    // A user who already had a JAVA_HOME and a PATH before jdk existed.
+    world
+        .user
+        .key
+        .set_raw_value(
+            "JAVA_HOME",
+            &env::string_value(r"%JAVA17%\home", RegType::REG_EXPAND_SZ),
+        )
+        .unwrap();
+    world
+        .user
+        .key
+        .set_raw_value(
+            "Path",
+            &env::string_value(r"%USERPROFILE%\bin;C:\tools", RegType::REG_EXPAND_SZ),
+        )
+        .unwrap();
+    let before_java_home = world.raw_value("JAVA_HOME");
+    let before_path = world.raw_value("Path");
+    assert_ok(&world.setup(&["--yes"]));
+
+    let undone = world.jdk(&["setup", "--undo"]);
+
+    assert_ok(&undone);
+    let messages = stderr(&undone);
+    assert!(
+        messages.contains(r"JAVA_HOME restored to %JAVA17%\home (REG_EXPAND_SZ)"),
+        "{messages}"
+    );
+    assert!(
+        messages.contains("new terminals pick this up"),
+        "{messages}"
+    );
+    assert_eq!(
+        world.raw_value("JAVA_HOME"),
+        before_java_home,
+        "restored to the same bytes and the same registry type"
+    );
+    assert_eq!(
+        world.raw_value("Path"),
+        before_path,
+        "the entries jdk never owned come back untouched"
+    );
+    // Everything setup made is gone...
+    assert_eq!(current::inspect(&world.root).unwrap(), Current::Absent);
+    assert!(!world.root.join("shims").exists());
+    assert!(!world.root.join("bin").exists());
+    // ...and the JDK the junction pointed at is not, because unlinking is not
+    // uninstalling.
+    assert!(jdk.join("bin").join("java.exe").exists());
+    assert!(messages.contains("kept the store at"), "{messages}");
+
+    // A second undo has nothing left to do, and says so instead of failing.
+    let again = world.jdk(&["setup", "--undo"]);
+    assert_ok(&again);
+    assert!(
+        stderr(&again).contains("nothing to undo"),
+        "{}",
+        stderr(&again)
+    );
+}
+
+/// The undo normally runs FROM the copy it is deleting: `bin\jdk.exe` is on
+/// the PATH entry it just removed. Windows will not release a mapped image, so
+/// the binary renames itself aside — and the report names the leftover rather
+/// than claiming a clean sweep. The instruction has to be executable too: a
+/// jdk that deleted itself cannot tell anyone to re-run it.
+#[test]
+fn setup_undo_from_the_store_binary_names_the_copy_it_could_not_delete() {
+    let world = World::new();
+    world.install_fake("temurin@21.0.5");
+    assert_ok(&world.setup(&[]));
+    let stored = world.root.join("bin").join("jdk.exe");
+
+    let undone = world.jdk_at(&stored, &["setup", "--undo"]);
+
+    assert_ok(&undone);
+    let messages = stderr(&undone);
+    let aside = world.root.join("bin").join("jdk.exe.old");
+    assert!(messages.contains("left behind"), "{messages}");
+    assert!(
+        messages.contains(&aside.display().to_string()),
+        "the report names it: {messages}"
+    );
+    assert!(aside.exists(), "and it is really there");
+    assert!(!stored.exists(), "the name it occupied is free again");
+    assert!(
+        !world.root.join("bin").join("jdk-shim.exe").exists(),
+        "the file nothing is executing goes the ordinary way"
+    );
+    // No pointing at a command that just deleted itself.
+    assert!(messages.contains("by hand"), "{messages}");
+    assert!(
+        !messages.contains("re-run this command"),
+        "this jdk.exe is gone; re-running it is not an option: {messages}"
+    );
+    // The half that matters completed all the same.
+    assert_eq!(env::read(&world.user.key, "JAVA_HOME").unwrap(), None);
+    assert!(!world.root.join("shims").exists());
+
+    // A jdk that survived elsewhere still collects the aside — the process
+    // holding it has exited by now.
+    let swept = world.jdk(&["setup", "--undo"]);
+    assert_ok(&swept);
+    assert!(!aside.exists(), "{}", stderr(&swept));
+    assert!(!world.root.join("bin").exists(), "{}", stderr(&swept));
+    assert!(
+        !stderr(&swept).contains("left behind"),
+        "nothing is left to report: {}",
+        stderr(&swept)
+    );
+}
+
+/// H1: the purge that matters is the one run from `bin\jdk.exe`, because that
+/// is the copy setup puts on the PATH. Its own aside makes `bin\` undeletable,
+/// and a single `remove_dir_all(root)` aborts on it — silently keeping the
+/// JDKs, the cache and the config while reporting a purge.
+#[test]
+fn setup_undo_purge_from_the_store_binary_still_takes_the_jdks() {
+    let world = World::new();
+    let jdk = world.install_fake("temurin@21.0.5");
+    // A foreign JAVA_HOME so setup writes a config.toml there is something to
+    // lose, and a cache to lose with it.
+    world
+        .user
+        .key
+        .set_raw_value(
+            "JAVA_HOME",
+            &env::string_value(r"C:\Program Files\Java\jdk-17", RegType::REG_SZ),
+        )
+        .unwrap();
+    assert_ok(&world.setup(&["--yes"]));
+    let cache = world.root.join("cache").join("index");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("index.json"), b"{}").unwrap();
+    assert!(world.root.join("config.toml").exists(), "a config to lose");
+    let stored = world.root.join("bin").join("jdk.exe");
+
+    let purged = world.jdk_at(&stored, &["setup", "--undo", "--purge", "--yes"]);
+
+    assert_ok(&purged);
+    let messages = stderr(&purged);
+    assert!(!jdk.exists(), "the JDKs go: {messages}");
+    assert!(
+        !world.root.join("cache").exists(),
+        "the cache too: {messages}"
+    );
+    assert!(
+        !world.root.join("config.toml").exists(),
+        "and the config: {messages}"
+    );
+    assert!(!world.root.join("shims").exists(), "{messages}");
+    // Only the aside of the running binary may stay, and it is named.
+    let aside = world.root.join("bin").join("jdk.exe.old");
+    assert!(aside.exists());
+    assert!(
+        messages.contains(&aside.display().to_string()),
+        "the report names exactly what stayed: {messages}"
+    );
+    assert!(
+        messages.contains("by hand") && messages.contains(&world.root.display().to_string()),
+        "the instruction names the root to delete: {messages}"
+    );
+    assert!(
+        !messages.contains("re-run this command"),
+        "there is no jdk left to re-run: {messages}"
+    );
+}
+
+/// M3: two setups with JAVA_HOME deleted in between. The backup the first one
+/// took describes a value the SECOND setup did not displace — the user removed
+/// it on purpose — so the undo must not bring it back.
+#[test]
+fn setup_undo_does_not_resurrect_a_java_home_the_user_deleted() {
+    let world = World::new();
+    world.install_fake("temurin@21.0.5");
+    world
+        .user
+        .key
+        .set_raw_value(
+            "JAVA_HOME",
+            &env::string_value(r"C:\Program Files\Java\jdk-17", RegType::REG_SZ),
+        )
+        .unwrap();
+    assert_ok(&world.setup(&["--yes"]));
+
+    // The user clears JAVA_HOME by hand, then runs setup again.
+    world.user.key.delete_value("JAVA_HOME").unwrap();
+    let second = world.setup(&[]);
+    assert_ok(&second);
+    assert!(
+        stderr(&second).contains("dropped the saved JAVA_HOME backup"),
+        "{}",
+        stderr(&second)
+    );
+
+    let undone = world.jdk(&["setup", "--undo"]);
+
+    assert_ok(&undone);
+    assert_eq!(
+        env::read(&world.user.key, "JAVA_HOME").unwrap(),
+        None,
+        "the second setup displaced nothing, so there is nothing to bring back: {}",
+        stderr(&undone)
+    );
+}
+
+#[test]
+fn setup_undo_on_a_machine_that_was_never_set_up_is_a_quiet_no_op() {
+    let world = World::new();
+
+    let undone = world.jdk(&["setup", "--undo"]);
+
+    assert_ok(&undone);
+    let messages = stderr(&undone);
+    assert!(messages.contains("nothing to undo"), "{messages}");
+    assert!(
+        !messages.contains("kept the store"),
+        "there is no store to keep: {messages}"
+    );
+    assert!(
+        !messages.contains("--purge"),
+        "nor anything to offer purging: {messages}"
+    );
+    assert!(!world.root.exists(), "and none is created on the way out");
+}
+
+#[test]
+fn setup_undo_purge_takes_the_store_with_it() {
+    let world = World::new();
+    world.install_fake("temurin@21.0.5");
+    assert_ok(&world.setup(&[]));
+
+    let purged = world.jdk(&["setup", "--undo", "--purge", "--yes"]);
+
+    assert_ok(&purged);
+    assert!(!world.root.exists(), "{}", stderr(&purged));
+    let messages = stderr(&purged);
+    assert!(messages.contains("installed JDKs included"), "{messages}");
+    assert!(
+        !messages.contains("nothing to undo"),
+        "a run that deleted the store did not do nothing: {messages}"
+    );
+}
+
+/// Flag combinations that cannot mean anything are refused before any work
+/// starts: `--purge` is a modifier of the undo, and the undo is the opposite
+/// of the run that materializes shims.
+#[test]
+fn setup_refuses_flag_combinations_that_cannot_mean_anything() {
+    let world = World::new();
+
+    let orphan_purge = world.jdk(&["setup", "--purge"]);
+    assert_eq!(orphan_purge.status.code(), Some(2));
+    assert!(
+        stderr(&orphan_purge).contains("--undo"),
+        "{}",
+        stderr(&orphan_purge)
+    );
+
+    let source = world.shim_source.to_string_lossy().into_owned();
+    let undo_with_install = world.jdk(&["setup", "--undo", "--shim-source", &source]);
+    assert_eq!(undo_with_install.status.code(), Some(2));
+    assert!(
+        stderr(&undo_with_install).contains("cannot be used with"),
+        "{}",
+        stderr(&undo_with_install)
+    );
+
+    assert!(!world.root.exists(), "a refused command does nothing");
+    assert_eq!(env::read(&world.user.key, "JAVA_HOME").unwrap(), None);
+}
+
 #[test]
 fn use_retargets_atomically_and_an_open_console_resolves_the_new_jdk() {
     let world = World::new();

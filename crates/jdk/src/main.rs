@@ -1,5 +1,6 @@
 //! `jdk` CLI: install/uninstall/list/available/pin/current/which (M3) plus
-//! the Windows pillar (M4) — `setup` (persistent JAVA_HOME/PATH/shims),
+//! the Windows pillar (M4) — `setup` (persistent JAVA_HOME/PATH/shims, with
+//! `--undo` to hand them back),
 //! `use` (atomic junction retarget), `doctor` (named health checks) — and
 //! `update` (self-update from this project's GitHub releases).
 //!
@@ -17,6 +18,7 @@ mod pin;
 mod remote;
 mod resolve;
 mod setup;
+mod undo;
 mod uninstall;
 mod update;
 mod r#use;
@@ -88,11 +90,19 @@ enum Command {
     },
     /// Prepare Windows once: JAVA_HOME, PATH, shims (idempotent)
     Setup {
-        /// Replace a JAVA_HOME set by another tool without asking
+        /// Replace a JAVA_HOME set by another tool without asking; with
+        /// --undo, purge without asking
         #[arg(long)]
         yes: bool,
+        /// Undo the setup: restore JAVA_HOME, drop the PATH entries, the
+        /// shims, the junction and the CLI copy. Installed JDKs are kept
+        #[arg(long)]
+        undo: bool,
+        /// With --undo: delete the store root too, installed JDKs included
+        #[arg(long, requires = "undo")]
+        purge: bool,
         /// Copy shims from this jdk-shim.exe instead of the one next to jdk.exe
-        #[arg(long, value_name = "PATH", hide = true)]
+        #[arg(long, value_name = "PATH", hide = true, conflicts_with = "undo")]
         shim_source: Option<PathBuf>,
     },
     /// Check the store, junction, registry and PATH; explain every problem
@@ -132,7 +142,15 @@ fn run(cli: Cli) -> Result<(), Fail> {
         Command::Current => current::run(&root),
         Command::Which { tool } => which::run(&root, tool.as_deref()),
         Command::Use { selector } => r#use::run(&root, &selector),
-        Command::Setup { yes, shim_source } => setup::run(&root, yes, shim_source.as_deref()),
+        Command::Setup {
+            yes,
+            undo,
+            purge,
+            shim_source,
+        } => match undo {
+            true => undo::run(&root, yes, purge),
+            false => setup::run(&root, yes, shim_source.as_deref()),
+        },
         Command::Doctor => doctor::run(&root),
         Command::Update { force } => update::run(&root, force),
     }

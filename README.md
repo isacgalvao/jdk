@@ -174,8 +174,45 @@ version (`21`, `21.0.5`), which uses the default vendor from your config
 | `jdk current` | Show which Java this directory resolves to, and why |
 | `jdk which [tool]` | Print the resolved path of a tool (`java` by default) — handy for IDE setup |
 | `jdk setup [--yes]` | One-time Windows prep: `JAVA_HOME`, `PATH`, shims (idempotent) |
+| `jdk setup --undo [--purge]` | Undo that prep; `--purge` deletes the store and the installed JDKs with it |
 | `jdk doctor` | Health-check the store, junction, registry and `PATH`; explain every problem |
 | `jdk update [--force]` | Update jdk itself to the latest release (checksum-verified; `--force` reinstalls that latest release even when it is the one you already run) |
+
+### Undoing the setup
+
+`jdk setup --undo` reverses `jdk setup`, and nothing else. It puts `JAVA_HOME`
+back to the value setup replaced — with its original registry type, so a
+`%JAVA17%\home` returns expandable instead of as a literal that never expands —
+or deletes it when setup found none to replace. It takes out the two `PATH`
+entries setup prepended and leaves every other entry byte for byte as it was,
+unlinks the `current` junction (the reparse point only, never the JDK behind
+it), and removes `shims\` and `bin\`. One `WM_SETTINGCHANGE` goes out at the
+end, so new terminals pick it up.
+
+**Your installed JDKs stay.** They were downloaded on purpose, and the undo has
+no opinion about them: `candidates\`, the catalog cache and `config.toml` are
+left where they are. `jdk setup --undo --purge` deletes the whole store
+instead, after asking — `--yes` answers for you, which is how CI would run it.
+It deletes the store one entry at a time, so a `bin\` it cannot remove (see
+below) costs you `bin\` and not the JDKs, the cache and the config it was also
+asked to take.
+
+Leftovers are named rather than hidden, and each comes with an instruction that
+actually works. The undo is normally invoked through `bin\jdk.exe`, which is one
+of the files it deletes: Windows does not release a running program, so that
+copy is renamed to `jdk.exe.old` and stays behind — and since the command that
+would collect it has just deleted itself, the output tells you which path to
+remove **by hand** once the process has exited. It never suggests re-running a
+`jdk` that is no longer there. Under `--purge` the path it names is the store
+root, so one deletion finishes the job.
+
+A `shims\` directory a running `java` still holds behaves differently: it
+survives **whole**, with no rename involved, and the output names the directory.
+That one a later `jdk setup --undo` does collect, once that `java` has exited —
+which the output says, because in that case there is still a `jdk` to run.
+Anything jdk did not create is reported as *left alone* and never touched.
+Either way the exit code stays 0, and with nothing left to undo the command says
+so and exits 0.
 
 ## How a version is chosen
 
@@ -289,7 +326,6 @@ informative only, never a failure.
 
 Not built yet, roughly in the order they are wanted:
 
-- an uninstaller — today nothing undoes `jdk setup`
 - winget and scoop packaging
 - more tools in the shim set (`jlink`, `jpackage`, `javap`, `jcmd`, …)
 

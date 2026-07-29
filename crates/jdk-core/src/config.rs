@@ -4,11 +4,12 @@
 //! keys only: unknown keys a hand-edit added are NOT preserved.
 //!
 //! Known keys beyond the resolve-visible ones: `java-home-before` /
-//! `java-home-before-kind`, the pre-setup JAVA_HOME backup kept for a
-//! future `setup --undo`. The resolve reader skips them as unknown — the
-//! shim never consumes them — but this writer owns them and preserves
-//! them across rewrites. Reading them still goes through that reader's
-//! `entries`: the file means one thing, not one thing per binary.
+//! `java-home-before-kind`, the JAVA_HOME backup `jdk setup` takes before
+//! replacing a foreign value and `jdk setup --undo` puts back. The resolve
+//! reader skips them as unknown — the shim never consumes them — but this
+//! writer owns them and preserves them across rewrites. Reading them still
+//! goes through that reader's `entries`: the file means one thing, not one
+//! thing per binary.
 
 use crate::error::{Error, Result};
 use crate::file_ops::atomic_rename;
@@ -51,6 +52,14 @@ pub fn save_java_home_before(root: &Path, config: &Config, backup: &JavaHomeBefo
         )));
     }
     emit(root, config, Some(backup))
+}
+
+/// Drops the JAVA_HOME backup once `setup --undo` has put it back in the
+/// registry, keeping the rest of `config` — the vendor and the license consent
+/// are the user's, not setup's to revoke. Consuming it is what makes a second
+/// undo a no-op instead of a restore of a value that is already restored.
+pub fn clear_java_home_before(root: &Path, config: &Config) -> Result<()> {
+    emit(root, config, None)
 }
 
 /// The saved pre-setup JAVA_HOME, if any. A missing kind key reads as
@@ -243,6 +252,32 @@ mod tests {
         save_java_home_before(temp.path(), &changed, &plain).unwrap();
         assert_eq!(java_home_before(temp.path()).unwrap(), Some(plain));
         assert_eq!(load(temp.path()).unwrap(), changed);
+    }
+
+    /// What `setup --undo` does after handing the value back: the backup goes,
+    /// the user's own settings stay.
+    #[test]
+    fn clearing_the_backup_keeps_the_rest_of_the_config() {
+        let temp = TempDir::new().unwrap();
+        let config = Config {
+            vendor: "zulu".to_string(),
+            auto_install: AutoInstall::Never,
+            accept_license: true,
+        };
+        save_java_home_before(
+            temp.path(),
+            &config,
+            &JavaHomeBefore {
+                value: r"C:\Program Files\Java\jdk-17".to_string(),
+                expandable: false,
+            },
+        )
+        .unwrap();
+
+        clear_java_home_before(temp.path(), &config).unwrap();
+
+        assert_eq!(java_home_before(temp.path()).unwrap(), None);
+        assert_eq!(load(temp.path()).unwrap(), config);
     }
 
     #[test]

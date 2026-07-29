@@ -9,7 +9,7 @@
 //! ([`machine_key`] opens it read-only, for `jdk doctor`).
 
 use crate::error::{Error, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
 
 pub use winreg::enums::RegType;
@@ -130,6 +130,29 @@ pub fn set_java_home(key: &RegKey, junction: &Path) -> Result<()> {
         .map_err(|err| Error::Env(format!("cannot write JAVA_HOME: {err}")))
 }
 
+/// Writes a string value back with its registry TYPE — the counterpart of
+/// [`read`]. `setup --undo` restores JAVA_HOME through it, and the type is
+/// half the restoration: putting `%JAVA17%\home` back as `REG_SZ` would hand
+/// the user a literal that never expands again (anti-model 1).
+pub fn write(key: &RegKey, name: &str, value: &EnvValue) -> Result<()> {
+    let vtype = if value.expandable {
+        RegType::REG_EXPAND_SZ
+    } else {
+        RegType::REG_SZ
+    };
+    key.set_raw_value(name, &string_value(&value.text, vtype))
+        .map_err(|err| Error::Env(format!("cannot write {name}: {err}")))
+}
+
+/// Deletes a value. Already absent is success — the goal state is reached.
+pub fn delete(key: &RegKey, name: &str) -> Result<()> {
+    match key.delete_value(name) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(Error::Env(format!("cannot delete {name}: {err}"))),
+    }
+}
+
 /// A registry string value built from text (UTF-16LE + trailing NUL).
 pub fn string_value(text: &str, vtype: RegType) -> RegValue<'static> {
     RegValue {
@@ -183,6 +206,75 @@ pub fn prepend_path(key: &RegKey, shims: &Path) -> Result<bool> {
         vtype: raw.vtype,
     })?;
     Ok(true)
+}
+
+/// PATH entry separator as a UTF-16 unit — where [`remove_path_entries`] cuts.
+const SEPARATOR: u16 = b';' as u16;
+
+/// Removes every PATH entry naming one of `dirs`, and returns the dirs that
+/// were actually there. The inverse of [`prepend_path`], matched by the same
+/// Windows-flavored comparison as [`path_count`], so exactly what a prepend
+/// counted as present is what a removal takes out.
+///
+/// Surviving entries keep their BYTES and the value keeps its TYPE. The cut is
+/// made on the raw UTF-16 units and never on decoded text, because the decode
+/// is lossy: an unpaired surrogate in somebody else's entry would come back as
+/// U+FFFD, and rewriting an entry that is none of jdk's business is precisely
+/// what an undo must not do. Text is built to COMPARE, never to write back —
+/// and an entry too broken to decode simply matches no directory and survives
+/// untouched. No match at all means no registry write at all.
+pub fn remove_path_entries(key: &RegKey, dirs: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let raw = match key.get_raw_value(PATH) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(Error::Env(format!("cannot read Path: {err}"))),
+        Ok(raw) => raw,
+    };
+    if !matches!(raw.vtype, RegType::REG_SZ | RegType::REG_EXPAND_SZ) {
+        return Err(Error::Env(format!(
+            "Path has registry type {:?}; expected REG_SZ or REG_EXPAND_SZ",
+            raw.vtype
+        )));
+    }
+
+    let wanted: Vec<String> = dirs
+        .iter()
+        .map(|dir| normalize_entry(&dir.to_string_lossy()))
+        .collect();
+    let units = units(&raw.bytes);
+    let mut removed = Vec::new();
+    let mut kept: Vec<&[u16]> = Vec::new();
+    for entry in units.split(|unit| *unit == SEPARATOR) {
+        let name = normalize_entry(&String::from_utf16_lossy(entry));
+        match wanted.iter().position(|dir| *dir == name) {
+            // A dir listed twice is removed twice but reported once.
+            Some(at) => {
+                if !removed.contains(&dirs[at]) {
+                    removed.push(dirs[at].clone());
+                }
+            }
+            None => kept.push(entry),
+        }
+    }
+    if removed.is_empty() {
+        return Ok(removed);
+    }
+
+    let mut value: Vec<u16> = Vec::new();
+    for (at, entry) in kept.iter().enumerate() {
+        if at > 0 {
+            value.push(SEPARATOR);
+        }
+        value.extend_from_slice(entry);
+    }
+    key.set_raw_value(
+        PATH,
+        &RegValue {
+            bytes: le_bytes(value.into_iter().chain(std::iter::once(0))).into(),
+            vtype: raw.vtype,
+        },
+    )
+    .map_err(|err| Error::Env(format!("cannot write Path: {err}")))?;
+    Ok(removed)
 }
 
 /// How many PATH entries of `path_text` name `dir` — 1 is healthy, 0 means
@@ -273,6 +365,10 @@ mod tests {
 
     fn shims() -> PathBuf {
         PathBuf::from(r"C:\Users\x\.jdk\shims")
+    }
+
+    fn bin() -> PathBuf {
+        PathBuf::from(r"C:\Users\x\.jdk\bin")
     }
 
     fn junction() -> PathBuf {
@@ -411,6 +507,133 @@ mod tests {
         let value = read(&test.key, PATH).unwrap().unwrap();
         assert_eq!(value.text, shims().to_string_lossy());
         assert!(!value.text.contains(';'), "no dangling separator");
+    }
+
+    /// The property the whole undo rests on: the entries jdk added go, and
+    /// everything else survives BYTE for byte — including a value the decode
+    /// would have mangled.
+    #[test]
+    fn remove_path_entries_takes_its_own_and_leaves_the_rest_byte_identical() {
+        let test = TestKey::create();
+        // A lone high surrogate in a foreign entry: `String::from_utf16_lossy`
+        // turns it into U+FFFD, so any round trip through text corrupts it.
+        let foreign: Vec<u16> = r"%USERPROFILE%\bin".encode_utf16().collect();
+        let broken = vec![0xD800u16, b'x' as u16];
+        let mut original: Vec<u16> = shims().to_string_lossy().encode_utf16().collect();
+        for entry in [&foreign, &broken] {
+            original.push(b';' as u16);
+            original.extend_from_slice(entry);
+        }
+        original.push(b';' as u16);
+        original.extend(bin().to_string_lossy().encode_utf16());
+        test.key
+            .set_raw_value(
+                PATH,
+                &RegValue {
+                    bytes: le_bytes(original.iter().copied().chain(std::iter::once(0))).into(),
+                    vtype: RegType::REG_EXPAND_SZ,
+                },
+            )
+            .unwrap();
+
+        let removed = remove_path_entries(&test.key, &[shims(), bin()]).unwrap();
+
+        assert_eq!(removed, vec![shims(), bin()]);
+        let raw = test.key.get_raw_value(PATH).unwrap();
+        assert_eq!(raw.vtype, RegType::REG_EXPAND_SZ, "type preserved");
+        let mut survivors = foreign.clone();
+        survivors.push(b';' as u16);
+        survivors.extend_from_slice(&broken);
+        assert_eq!(
+            raw.bytes,
+            le_bytes(survivors.into_iter().chain(std::iter::once(0))),
+            "foreign entries survive verbatim, the mangling decode included"
+        );
+    }
+
+    #[test]
+    fn remove_path_entries_matches_the_way_prepend_path_does() {
+        let test = TestKey::create();
+        // Quoted, lowercased, trailing separator, listed twice — all the same
+        // directory to `path_count`, so all of them go.
+        let text = format!(
+            r#"C:\a;"{}\";{};C:\b"#,
+            shims().to_string_lossy().to_uppercase(),
+            shims().to_string_lossy().to_lowercase()
+        );
+        test.key
+            .set_raw_value(PATH, &string_value(&text, RegType::REG_SZ))
+            .unwrap();
+
+        let removed = remove_path_entries(&test.key, &[shims(), bin()]).unwrap();
+
+        assert_eq!(removed, vec![shims()], "bin was never on this PATH");
+        let value = read(&test.key, PATH).unwrap().unwrap();
+        assert_eq!(value.text, r"C:\a;C:\b");
+        assert_eq!(value.kind(), "REG_SZ");
+    }
+
+    #[test]
+    fn remove_path_entries_without_a_match_never_writes() {
+        let test = TestKey::create();
+        assert!(
+            remove_path_entries(&test.key, &[shims()])
+                .unwrap()
+                .is_empty(),
+            "a PATH that does not exist has nothing to remove"
+        );
+        assert_eq!(read(&test.key, PATH).unwrap(), None, "and none is created");
+
+        // An empty entry (`;;`) is nobody's directory and stays.
+        test.key
+            .set_raw_value(PATH, &string_value(r"C:\a;;C:\b", RegType::REG_SZ))
+            .unwrap();
+        let before = test.key.get_raw_value(PATH).unwrap();
+
+        assert!(
+            remove_path_entries(&test.key, &[shims()])
+                .unwrap()
+                .is_empty()
+        );
+
+        let after = test.key.get_raw_value(PATH).unwrap();
+        assert_eq!((after.bytes, after.vtype), (before.bytes, before.vtype));
+    }
+
+    #[test]
+    fn remove_path_entries_empties_a_path_that_was_only_ours() {
+        let test = TestKey::create();
+        test.key
+            .set_raw_value(
+                PATH,
+                &string_value(&shims().to_string_lossy(), RegType::REG_EXPAND_SZ),
+            )
+            .unwrap();
+
+        assert_eq!(
+            remove_path_entries(&test.key, &[shims()]).unwrap(),
+            vec![shims()]
+        );
+
+        let value = read(&test.key, PATH).unwrap().unwrap();
+        assert_eq!(value.text, "", "emptied, not deleted");
+        assert!(value.expandable, "and the type still stands");
+    }
+
+    #[test]
+    fn write_restores_text_and_type_and_delete_is_idempotent() {
+        let test = TestKey::create();
+        let before = EnvValue {
+            text: r"%JAVA17%\home".to_string(),
+            expandable: true,
+        };
+
+        write(&test.key, JAVA_HOME, &before).unwrap();
+
+        assert_eq!(read(&test.key, JAVA_HOME).unwrap(), Some(before));
+        delete(&test.key, JAVA_HOME).unwrap();
+        assert_eq!(read(&test.key, JAVA_HOME).unwrap(), None);
+        delete(&test.key, JAVA_HOME).expect("deleting an absent value is success");
     }
 
     #[test]

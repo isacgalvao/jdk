@@ -5,7 +5,8 @@
 //!
 //! Defensive on foreign state: a JAVA_HOME set by another tool is only
 //! replaced with consent (TTY prompt, or `--yes` for scripts), and the old
-//! value+type is saved to config.toml first for a future `setup --undo`.
+//! value+type is saved to config.toml first — that backup is what
+//! `setup --undo` (`crate::undo`) hands back.
 
 use crate::fail::Fail;
 use jdk_core::config::JavaHomeBefore;
@@ -189,6 +190,26 @@ fn write_java_home(
             Ok(false)
         }
         JavaHomeState::Absent => {
+            // A backup an EARLIER setup took is stale now: this run displaced
+            // nothing, so "before" is "not set". Leaving the record would let
+            // `setup --undo` resurrect a JAVA_HOME the user deleted on purpose
+            // between the two setups. Dropped before the write, so a store that
+            // cannot record the change does not get the change either.
+            if jdk_core::config::java_home_before(root)
+                .map_err(Fail::engine)?
+                .is_some()
+            {
+                jdk_core::config::clear_java_home_before(root, config).map_err(|err| {
+                    Fail::new(
+                        exit::FAILURE,
+                        format!("cannot drop the stale JAVA_HOME backup in config.toml: {err}"),
+                    )
+                    .hint("fix the store (permissions/disk), then re-run jdk setup")
+                })?;
+                eprintln!(
+                    "jdk: dropped the saved JAVA_HOME backup — there was none to replace this time"
+                );
+            }
             env::set_java_home(key, junction).map_err(Fail::engine)?;
             eprintln!(
                 "jdk: JAVA_HOME set to {} (this value never changes — `jdk use` retargets the junction instead)",
@@ -201,9 +222,11 @@ fn write_java_home(
                 value: old.text.clone(),
                 expandable: old.expandable,
             };
-            // Save BEFORE overwriting, and a failed save ABORTS: replacing
-            // a value we could not back up would lose it forever (a future
-            // `setup --undo` depends on it).
+            // Save BEFORE overwriting, and a failed save ABORTS: replacing a
+            // value we could not back up would lose it forever, and it is what
+            // `setup --undo` restores from. A second replacement OVERWRITES
+            // this record, so it always names the value the LAST setup
+            // displaced — `undo::restore_java_home` documents what that means.
             jdk_core::config::save_java_home_before(root, config, &backup).map_err(|err| {
                 Fail::new(
                     exit::FAILURE,

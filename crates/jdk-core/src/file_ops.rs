@@ -4,7 +4,7 @@
 use crate::error::{Error, Result};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Rename that atomically replaces an existing destination FILE: `fs::rename`
 /// asks Windows for `MOVEFILE_REPLACE_EXISTING`, so an occupied target is
@@ -99,6 +99,42 @@ pub fn replace_running(staging: &Path, dest: &Path) -> Result<()> {
     }
 }
 
+/// Deletes an executable, tolerating one that is RUNNING — which is the normal
+/// case for `setup --undo`, invoked through the very `bin\jdk.exe` it is
+/// removing. Win32 refuses to delete an executable in use but allows renaming
+/// it, the same asymmetry [`replace_running`] leans on, so the file is moved
+/// aside to `<name>.exe.old` and deleted best-effort. While the process lives
+/// that delete cannot succeed, so the aside is what stays behind: it comes back
+/// as `Ok(Some(..))` for the caller to REPORT rather than to quietly count as
+/// removed. A file already gone is `Ok(None)` — the goal state, not a failure.
+pub fn remove_running(path: &Path) -> Result<Option<PathBuf>> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(None),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) if in_use(&err) => {
+            let aside = path.with_extension("exe.old");
+            // A leftover `.old` from an earlier run would block the rename;
+            // if it too is undeletable the rename's error is the honest answer.
+            let _ = fs::remove_file(&aside);
+            fs::rename(path, &aside)
+                .map_err(Error::io("move the running executable aside from", path))?;
+            Ok(fs::remove_file(&aside).is_err().then_some(aside))
+        }
+        Err(err) => Err(Error::io("remove", path)(err)),
+    }
+}
+
+/// Whether Windows refused because something else is using the file — the
+/// refusal a rename can still get around. There are TWO of them, and taking
+/// only the first makes the outcome a race: ACCESS_DENIED (5) is what a
+/// mapped executable image raises, SHARING_VIOLATION (32) what an open handle
+/// without `FILE_SHARE_DELETE` raises, and a starting process gives one or the
+/// other depending on how far its loader has got.
+fn in_use(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::PermissionDenied
+        || (cfg!(windows) && err.raw_os_error() == Some(32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +203,50 @@ mod tests {
         assert_eq!(fs::read(&dest).unwrap(), b"v1");
         assert!(!staging.exists());
         assert!(!temp.path().join("java.exe.old").exists());
+    }
+
+    #[test]
+    fn remove_running_deletes_a_file_nobody_is_executing_and_forgives_a_missing_one() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("jdk.exe");
+        fs::write(&path, b"v1").unwrap();
+
+        assert_eq!(remove_running(&path).unwrap(), None);
+
+        assert!(!path.exists());
+        assert!(!temp.path().join("jdk.exe.old").exists(), "no aside needed");
+        assert_eq!(
+            remove_running(&path).unwrap(),
+            None,
+            "already gone is the goal state"
+        );
+    }
+
+    /// The self-removal `setup --undo` performs: the binary doing the removing
+    /// is the one being removed. It cannot vanish while its image is mapped, so
+    /// what the caller gets back is the aside it must own up to.
+    #[cfg(windows)]
+    #[test]
+    fn remove_running_moves_a_live_executable_aside_and_reports_the_leftover() {
+        let temp = TempDir::new().unwrap();
+        let (_, fake_java) = test_support::shim_binaries();
+        let path = temp.path().join("jdk.exe");
+        fs::copy(&fake_java, &path).unwrap();
+        let mut child = std::process::Command::new(&path)
+            .env("FAKE_JAVA_SLEEP_MS", "30000")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn the copy so its image is mapped");
+
+        let leftover = remove_running(&path).unwrap();
+
+        assert_eq!(leftover, Some(temp.path().join("jdk.exe.old")));
+        assert!(!path.exists(), "the name is free again");
+        assert!(leftover.unwrap().exists(), "and the aside is still on disk");
+
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 
     /// A swap that cannot happen must cost the destination nothing. The
