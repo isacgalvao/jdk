@@ -9,6 +9,8 @@
 //! holds the JDK stays post-v0.1.
 
 use crate::fail::{self, Fail};
+use jdk_core::Error;
+use jdk_core::file_ops;
 use jdk_resolve::{exit, store};
 use std::fs;
 use std::io::{self, ErrorKind};
@@ -53,7 +55,9 @@ enum Removal {
 /// Rename-probe removal of one candidate directory. The rename's error kind
 /// tells the causes apart: a missing source means a concurrent uninstall; on
 /// Windows `PermissionDenied` (os error 5) is what BOTH a locked directory
-/// and an ACL denial raise, so that message names the two.
+/// and an ACL denial raise, so that message names the two. The DELETE's error
+/// kind then decides whether a leftover is worth deferring to the sweep or is
+/// a failure of its own (BUG-12).
 fn remove(dir: &Path, name: &str) -> Result<Removal, Fail> {
     remove_with(dir, name, |dir: &Path| fs::remove_dir_all(dir))
 }
@@ -74,7 +78,16 @@ fn remove_with(
     match fs::rename(dir, &removing) {
         Ok(()) => match remove(&removing) {
             Ok(()) => Ok(Removal::Removed),
-            Err(_) => Ok(Removal::Deferred),
+            // Only an in-use refusal is deferrable, and the difference is not
+            // cosmetic: the sweep that finishes the job runs on every
+            // store-touching command and succeeds once the holding process
+            // exits. Something else — no space left to journal the delete, an
+            // I/O error on the volume — is not waiting on any process, so
+            // announcing it as "in use" sends the user hunting one that does
+            // not exist while the bytes stay put (BUG-12).
+            Err(err) if file_ops::in_use(&err) => Ok(Removal::Deferred),
+            Err(err) => Err(Fail::engine(Error::io("delete", &removing)(err))
+                .hint(format!("{name} was renamed aside before the delete failed"))),
         },
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(Removal::AlreadyGone),
         Err(err) if err.kind() == ErrorKind::PermissionDenied => Err(Fail::new(
@@ -174,5 +187,28 @@ mod tests {
         sweep_orphans(root);
 
         assert!(!removing.exists(), "a later sweep clears the leftover");
+    }
+
+    /// BUG-12: a delete that failed for want of space is not "in use", and the
+    /// difference matters — the sweep this used to promise would refuse
+    /// forever, while the user went looking for a process to close.
+    #[test]
+    fn a_delete_no_sweep_could_finish_is_reported_as_the_failure_it_is() {
+        let temp = TempDir::new().unwrap();
+        let dir = store::java_candidates(temp.path()).join("temurin@21.0.4");
+        fs::create_dir_all(&dir).unwrap();
+
+        let fail = remove_with(&dir, "temurin@21.0.4", |_| {
+            Err(io::Error::from(ErrorKind::StorageFull))
+        })
+        .unwrap_err();
+
+        let message = fail.to_string();
+        assert!(message.contains("cannot delete"), "{message}");
+        assert!(message.contains("free space"), "{message}");
+        assert!(
+            message.contains("renamed aside"),
+            "the rename already happened, and the message owns up to it: {message}"
+        );
     }
 }
