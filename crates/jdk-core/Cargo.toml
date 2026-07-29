@@ -10,6 +10,10 @@ publish = true
 
 [dependencies]
 jdk-resolve.workspace = true
+# Verification of the release SHA256SUMS signature (SSHSIG over ed25519) and
+# the armor it arrives in. Verify-only: nothing here ever mints a key.
+ed25519-dalek.workspace = true
+base64.workspace = true
 # Sync HTTP over rustls, proxy from env; redirects are followed manually so the
 # HTTPS-only policy and vendor headers apply to every hop.
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }

@@ -1,13 +1,14 @@
 //! Hermetic test support: a hand-rolled loopback HTTP server (full control
 //! over ETag/304, Range/206, redirect chains and failure sequences, one
 //! request per connection via `Connection: close` — no extra dev-dependency),
-//! fake-JDK zip and catalog fixtures, and on-demand builds of the workspace
-//! binaries.
+//! fake-JDK zip and catalog fixtures, an SSHSIG signer for release fixtures,
+//! and on-demand builds of the workspace binaries.
 
 pub use jdk_core::download::sha256_hex;
 
 #[cfg(windows)]
 pub mod reg;
+pub mod sshsig;
 
 use jdk_core::index::{
     IndexEntry, IndexFile, Package, ReleaseStatus, SCHEMA_VERSION, current_platform,
@@ -256,6 +257,12 @@ pub fn fake_jdk_zip(java_exe: &[u8]) -> Vec<u8> {
 /// Zip shaped like a release bundle: `jdk.exe` and `jdk-shim.exe` side by
 /// side at the archive root, the way release.yml packages them.
 pub fn release_zip(jdk_exe: &[u8], shim_exe: &[u8]) -> Vec<u8> {
+    release_zip_padded(jdk_exe, shim_exe, 0)
+}
+
+/// [`release_zip`] plus `filler` junk entries — for pinning the update's
+/// entry ceiling, which a real four-file bundle never approaches.
+pub fn release_zip_padded(jdk_exe: &[u8], shim_exe: &[u8], filler: usize) -> Vec<u8> {
     let mut cursor = std::io::Cursor::new(Vec::new());
     let mut writer = zip::ZipWriter::new(&mut cursor);
     let options = zip::write::SimpleFileOptions::default();
@@ -263,6 +270,12 @@ pub fn release_zip(jdk_exe: &[u8], shim_exe: &[u8]) -> Vec<u8> {
     writer.write_all(jdk_exe).unwrap();
     writer.start_file("jdk-shim.exe", options).unwrap();
     writer.write_all(shim_exe).unwrap();
+    for i in 0..filler {
+        writer
+            .start_file(format!("filler-{i}.txt"), options)
+            .unwrap();
+        writer.write_all(b"padding").unwrap();
+    }
     writer.finish().unwrap();
     cursor.into_inner()
 }

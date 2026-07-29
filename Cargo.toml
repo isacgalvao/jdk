@@ -19,16 +19,28 @@ license = "Apache-2.0"
 repository = "https://github.com/isacgalvao/jdk"
 publish = false
 
-# The internal crates, declared once so a release bumps one place. `version` is
-# the requirement cargo bakes into the published manifests, and cargo has no way
-# to inherit the package version into a dependency requirement — so it repeats
-# the version above. Forgetting it is not a silent drift: the path dependency no
-# longer satisfies the requirement and every `cargo check` fails to resolve.
+# The internal crates, plus the two the signature anchor rests on. Most
+# external dependencies are still declared per crate; these two are hoisted
+# because jdk-core verifies what test-support signs, and the pair has to be
+# the same ed25519 on both sides of that test.
 [workspace.dependencies]
+# `version` is the requirement cargo bakes into the published manifests, and
+# cargo has no way to inherit the package version into a dependency requirement
+# — so it repeats the version above. Forgetting it is not a silent drift: the
+# path dependency no longer satisfies the requirement and every `cargo check`
+# fails to resolve.
 jdk-core = { path = "crates/jdk-core", version = "0.5.0" }
 jdk-resolve = { path = "crates/jdk-resolve", version = "0.5.0" }
 # Dev-only and never published, so it carries no requirement to keep in step.
 test-support = { path = "crates/test-support" }
+
+# The SSHSIG anchor under `jdk update`: jdk-core verifies, test-support signs
+# the fixtures it verifies against. Declared here so both speak the same
+# ed25519. `default-features = false` drops `rand_core` (no key generation
+# anywhere) and the precomputed tables of `fast`, which buy nothing for a
+# binary that verifies one signature per update.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+base64 = "0.22"
 
 # Size-optimized profile for the shim, which is copied byte-identically once
 # per JDK tool — so every byte counts.

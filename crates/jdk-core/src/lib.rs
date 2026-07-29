@@ -8,7 +8,8 @@
 //!   [`extract`] (hardened zip), [`layout`] (find the JDK root),
 //!   [`install`] (locked, idempotent);
 //! - self-update source: [`release`] (latest-version discovery and verified
-//!   bundle fetch from this project's own GitHub releases).
+//!   bundle fetch from this project's own GitHub releases) over [`sshsig`]
+//!   (the signature that anchors it in a key compiled into the binary).
 //!
 //! # No API stability guarantee
 //!
@@ -38,5 +39,6 @@ pub mod layout;
 pub mod release;
 #[cfg(windows)]
 pub mod shims;
+pub mod sshsig;
 
 pub use error::{Error, Result};
