@@ -16,13 +16,23 @@ updates:
     commit-message:
       prefix: ci
 
+  # Cargo splits in two. Patch and minor bumps travel together and are merged
+  # by dependabot-automerge.yml once CI passes; a MAJOR gets a PR to itself,
+  # because the group with `patterns: "*"` once carried `zip 2.4.2 -> 8.6.0`
+  # — six majors of the extraction library — inside a nine-crate PR, where the
+  # one bump that needed `extract.rs` read like eight that needed nothing.
+  # Anything outside the group is ungrouped, which is what makes majors
+  # individual: there is no second group to write.
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     groups:
-      cargo:
+      cargo-patch-minor:
         patterns:
           - "*"
+        update-types:
+          - patch
+          - minor
     commit-message:
       prefix: chore

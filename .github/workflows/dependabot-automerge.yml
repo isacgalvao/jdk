@@ -1,0 +1,100 @@
+# Merges a dependabot pull request once ci has passed on it, but only when
+# nothing in it is a major bump. Majors get their own PR (see dependabot.yml)
+# and stay for a human — the grouped update that carried six majors of `zip`
+# past review is exactly what this split exists to prevent.
+#
+# Why `workflow_run` and not `pull_request`: this job needs write access, and a
+# `workflow_run` workflow always runs the file as it exists on the DEFAULT
+# BRANCH, in that branch's context. A pull request therefore cannot edit this
+# file to get at the token, and nothing from the PR is ever checked out or
+# executed here — the only thing read from it is metadata, through the API.
+#
+# It also replaces branch protection and the auto-merge flag, neither of which
+# this repository has: the gate is literally "the ci run for this exact commit
+# concluded successfully", which is what `workflow_run` reports.
+
+name: dependabot automerge
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      # The merge itself is a contents write; listing and reading the pull
+      # request needs no more than read.
+      contents: write
+      pull-requests: read
+    steps:
+      - name: merge the update unless something in it is a major
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          # The PR is looked up by head branch rather than read from
+          # `workflow_run.pull_requests`, which the API leaves empty in cases
+          # it does not promise to enumerate. A branch name is not a unique
+          # key — a fork can open a PR from a branch of the same name — so the
+          # entry is chosen explicitly rather than taken as `.[0]`: same
+          # repository, opened by dependabot. No match, no merge.
+          number=$(gh pr list --head "$BRANCH" --state open \
+            --json number,isCrossRepository,author \
+            --jq '[.[] | select(.isCrossRepository == false and (.author.login == "dependabot[bot]" or .author.login == "app/dependabot"))] | .[0].number // empty')
+          if [ -z "$number" ]; then
+            echo "no open same-repository dependabot pull request for $BRANCH"
+            exit 0
+          fi
+
+          # ci passed on TESTED_SHA; anything pushed since is untested, and
+          # merging it would spend this workflow's approval on other bytes.
+          # Checked here to explain the outcome, and enforced again atomically
+          # at the merge below, where a push racing this job is still possible.
+          head=$(gh pr view "$number" --json headRefOid --jq '.headRefOid')
+          if [ "$head" != "$TESTED_SHA" ]; then
+            echo "#$number moved to $head since ci ran on $TESTED_SHA - not merging"
+            exit 0
+          fi
+
+          # Dependabot writes what it did into its own commit message, one
+          # `update-type: version-update:semver-<level>` line per dependency.
+          # That is the same metadata dependabot/fetch-metadata reads, and it
+          # is available here, where that action's pull_request context is not.
+          # It rests on dependabot's one-commit-per-PR habit: a second commit
+          # would become the head, carry no metadata, and stop the merge. That
+          # is the direction to fail in.
+          message=$(gh api "repos/$GH_REPO/commits/$TESTED_SHA" --jq '.commit.message')
+          levels=$(printf '%s\n' "$message" | grep -oE 'update-type: version-update:semver-[a-z]+' | sed 's/.*semver-//' | sort -u || true)
+          if [ -z "$levels" ]; then
+            echo "#$number carries no dependabot update-type metadata - not merging"
+            exit 0
+          fi
+          for level in $levels; do
+            case "$level" in
+              patch|minor) ;;
+              *)
+                echo "#$number contains a $level bump - leaving it for review"
+                exit 0
+                ;;
+            esac
+          done
+
+          # --match-head-commit closes the window between the check above and
+          # this call: GitHub refuses the merge if the head moved, so a push
+          # landing mid-job cannot be merged on the strength of a ci run that
+          # never saw it.
+          echo "#$number is $(echo "$levels" | tr '\n' ' ')only - merging"
+          gh pr merge "$number" --merge --match-head-commit "$TESTED_SHA"
