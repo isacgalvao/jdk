@@ -63,10 +63,15 @@ reaching 1.0, and stabilizing the contract stays a deliberate decision rather
 than a side effect of a version number.
 
 Two contracts version separately from the product. The **index schema** carries
-its own `version` in `index.json` and moves when the wire format does. The
-**Rust API** of `jdk-core` and `jdk-resolve` carries no contract at all: those
-crates are on crates.io only so `cargo install jdk` can resolve them, and both
-say so in their own docs — their version tracks the CLI, not their API.
+its own `version` in `index.json` and moves when the wire format does — an
+additive change does not bump it, a change of shape does — and since 0.6.0 that
+number is load-bearing: a client meeting an index above the version it reads
+refuses the file and names the way to one that reads it, instead of guessing at
+a shape nobody told it about. The rule is written out in `jdk-core/src/index.rs`
+beside the constant. The **Rust API** of `jdk-core` and `jdk-resolve` carries no
+contract at all: those crates are on crates.io only so `cargo install jdk` can
+resolve them, and both say so in their own docs — their version tracks the CLI,
+not their API.
 
 ## 3. Changelog
 
@@ -90,24 +95,23 @@ GitHub release, so it must read well on its own.
 
 [Keep a Changelog]: https://keepachangelog.com/en/1.1.0/
 
-## 4. Local gates
+## 4. Local gates (optional)
 
-Run these from the repo root before tagging. They mirror CI (`check` + `deny`
-jobs) plus the release build's own audit:
+`release.yml` runs `ci.yml` at the tagged commit before it builds anything, so a
+tag pushed on a commit that never went through CI still cannot reach crates.io.
+These are for meeting a failure before the tag rather than after it:
 
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-cargo deny check                      # license / advisory allowlist
+cargo deny --locked check                 # license / advisory allowlist
+./.github/scripts/test_install_anchor.ps1 # install.ps1's checksum anchor
 ```
 
-Running these by hand is a convenience, not the gate: the release workflow runs
-the same set itself before it builds or publishes anything, so a tag pushed on a
-commit that never went through CI still cannot reach crates.io. What the
-workflow additionally enforces, and this list cannot, is that the tag matches
-`[workspace.package] version` and that `CHANGELOG.md` carries a `## [X.Y.Z]`
-section for it — both checked before the first artifact is built.
+Two checks have no local form: that the tag matches `[workspace.package]
+version`, and that `CHANGELOG.md` carries a `## [X.Y.Z]` section for it. Both
+run before the first artifact is built.
 
 ## 5. Cut the release
 
@@ -136,21 +140,36 @@ The tag push is the point of no return — everything after is automatic.
 
 ## 6. What the workflow does (automatic)
 
-On the `v*` tag, `release.yml` runs two jobs:
+On the `v*` tag, `release.yml` runs four jobs in a line:
 
-- **release** (`windows-2025`): resolves the version and re-checks the tag ==
-  Cargo version and the CHANGELOG section; `cargo audit`; builds `jdk.exe`
-  (SBOM embedded via `cargo auditable`) and `jdk-shim.exe` (size-gated < 1 MiB),
-  x64 and best-effort arm64; assembles per-arch zips with `LICENSE` + `README.md`,
-  per-file `.sha256` sidecars and an aggregate `SHA256SUMS`; scans `dist/` with
-  Defender; **signs `SHA256SUMS` with `ssh-keygen -Y sign`** (`SHA256SUMS.sig`,
-  namespace `jdk-release`, key from the `RELEASE_SIGNING_KEY` secret); attaches
-  **SLSA build-provenance attestations** to the zips; and publishes the GitHub
-  release with the CHANGELOG section as notes plus install/verify blocks.
-- **publish-crates** (`needs: release`): `cargo publish` in dependency order
-  **jdk-resolve → jdk-core → jdk**, waiting for each to index. Uses the
-  `CARGO_REGISTRY_TOKEN` secret. `jdk-index-gen` and `test-support` are
-  `publish = false`; `jdk-shim` is not a published crate.
+- **gates**: `ci.yml` at the tagged commit — the set in §4.
+- **build** (`windows-2025`, read-only token): resolves the version and
+  re-checks the tag == Cargo version and the CHANGELOG section; `cargo publish
+  --dry-run` for the three crates; builds `jdk.exe` (SBOM embedded via `cargo
+  auditable`) and `jdk-shim.exe` (size-gated < 1 MiB), x64 and best-effort
+  arm64; assembles per-arch zips with `LICENSE` + `README.md`, per-file
+  `.sha256` sidecars and an aggregate `SHA256SUMS`; scans `dist/` with Defender;
+  uploads `dist/` as a workflow artifact.
+- **release** (`needs: build`, tag only): downloads that artifact, **signs
+  `SHA256SUMS` with `ssh-keygen -Y sign`** (`SHA256SUMS.sig`, namespace
+  `jdk-release`, key from the `RELEASE_SIGNING_KEY` secret), attaches **SLSA
+  build-provenance attestations** to the zips, and publishes the GitHub release
+  with the CHANGELOG section as notes plus install/verify blocks. It is the only
+  job holding write access or an OIDC token, and it compiles nothing: no build
+  script in the dependency tree ever shares an environment with either.
+- **publish-crates** (`needs: release`, `environment: release`): `cargo publish`
+  in dependency order **jdk-resolve → jdk-core → jdk**, waiting for each to
+  index. Uses the `CARGO_REGISTRY_TOKEN` secret. `jdk-index-gen` and
+  `test-support` are `publish = false`; `jdk-shim` is not a published crate.
+
+A `workflow_dispatch` run stops after **build**: gates, build, package, scan and
+artifact, with no signature, no release and no publish.
+
+The `release` **environment** is a repository setting (Settings → Environments),
+not something the workflow file can create. It has to exist and hold
+`CARGO_REGISTRY_TOKEN`, or `publish-crates` cannot run; it is also where a
+required reviewer or a wait timer goes, if the maintainer wants the crates.io
+upload to stop for a human.
 
 ## 7. Verify the published release
 
@@ -218,9 +237,11 @@ must always agree:
 | `RELEASING.md` § 7 | what the maintainer verifies with |
 | `.github/workflows/release.yml` (release-notes "Verify" block) | what every release page tells users to trust |
 
-The workflow materializes the secret into `$RUNNER_TEMP`, hardens its ACL,
-signs, and deletes it in a `finally` — the key never reaches the repository or
-an artifact.
+The workflow materializes the secret into `$RUNNER_TEMP` (normalizing line
+endings — an editor that saved the key with CRLF would otherwise produce a file
+OpenSSH rejects), hardens its ACL, signs, and deletes it in a `finally` that
+then asserts the file is gone. The key never reaches the repository or an
+artifact.
 
 ### Rotation
 
