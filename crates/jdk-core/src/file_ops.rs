@@ -5,6 +5,35 @@ use crate::error::{Error, Result};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// How long ONE [`replace_running`] may spend waiting out refusals that are
+/// nobody's fault — shared by its steps rather than granted to each, so the
+/// ceiling a caller can quote is this number and not a multiple of it.
+///
+/// Real-time antivirus and EDR open a handle on a just-written `.exe` to scan
+/// it, and a rename landing inside that window is refused with one of the two
+/// [`in_use`] codes; the scan of a file this size is over in tens of
+/// milliseconds. Two seconds is generous for that and still short enough that
+/// a PERMANENT block fails while the user is watching, instead of after a
+/// pause they would read as a hang. Only two shapes are permanent: a handle
+/// nobody releases, and a DIRECTORY occupying the `.exe.old` aside name,
+/// which the pre-clear below cannot shift (`remove_file` refuses a directory)
+/// and a rename cannot replace, leaving the swap nowhere to move the
+/// occupant. The near misses are worth naming because they look permanent and
+/// are not: a read-only `dest` OR a read-only aside both give way, since
+/// `fs::remove_file` clears the attribute before deleting; and a directory on
+/// `dest` ITSELF is simply renamed aside like any other occupant. Nothing
+/// here waits for a running executable to exit either — that refusal has its
+/// own answer (the rename-aside), so there is no case a longer budget would
+/// rescue.
+const RETRY_BUDGET: Duration = Duration::from_secs(2);
+
+/// First pause, doubled per attempt until [`RETRY_BUDGET`] is spent: 50, 100,
+/// 200, 400, 800 ms. The first is shorter than the failed call it follows, so
+/// a scan that ends promptly costs nothing anyone can perceive.
+const RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
 /// Rename that atomically replaces an existing destination FILE: `fs::rename`
 /// asks Windows for `MOVEFILE_REPLACE_EXISTING`, so an occupied target is
@@ -70,32 +99,69 @@ fn replace_existing(from: &Path, to: &Path) -> io::Result<()> {
 ///
 /// Should the final rename fail AFTER the aside emptied `dest`, the aside is
 /// rolled back onto `dest` (best-effort — the original error is reported
-/// either way), so the destination never silently vanishes. No test pins that
-/// rollback, and the reason is a property of the algorithm rather than a gap in
-/// the suite: moving `dest` aside is what takes `dest` OUT OF THE WAY, so every
-/// fault that lived in the destination — a directory sitting on the name, a
-/// read-only occupant — is consumed by that step, and the retry then succeeds.
-/// What is left has to live in `staging` or in the parent directory, and on
-/// Unix, where `replace_existing` is a plain `fs::rename`, no shape of the
-/// filesystem yields the `PermissionDenied` this arm is guarded by: only a DAC
-/// refusal does, which a test running as root never meets. Reaching the
-/// rollback therefore takes fault injection, not a cleverer fixture.
+/// either way), so the destination never silently vanishes.
+///
+/// Every step that CAN succeed on a second try gets one: an antivirus holding
+/// a handle on a file this code just wrote refuses the rename with an
+/// [`in_use`] code, and the handle is gone milliseconds later (BUG-06). The
+/// first call is the exception, and deliberately so — its refusal is how a
+/// RUNNING destination announces itself, which waiting never cures, so it goes
+/// straight to the rename-aside rather than charging every self-update the
+/// full [`RETRY_BUDGET`] for a call that cannot succeed while this process
+/// lives.
 pub fn replace_running(staging: &Path, dest: &Path) -> Result<()> {
+    let deadline = Instant::now() + RETRY_BUDGET;
     match replace_existing(staging, dest) {
         Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::PermissionDenied && dest.exists() => {
+        Err(err) if in_use(&err) && dest.exists() => {
             let aside = dest.with_extension("exe.old");
             // A leftover `.old` still running blocks the rename below; the
             // resulting error is the honest answer for that corner.
             let _ = fs::remove_file(&aside);
-            fs::rename(dest, &aside)
+            retrying(deadline, dest, || fs::rename(dest, &aside))
                 .map_err(Error::io("move the running executable aside from", dest))?;
-            replace_existing(staging, dest).map_err(|err| {
+            retrying(deadline, dest, || replace_existing(staging, dest)).map_err(|err| {
                 let _ = fs::rename(&aside, dest);
                 Error::io("place", dest)(err)
             })
         }
+        // Nothing to move aside, so nothing about the destination explains the
+        // refusal: whatever holds the swap holds `staging` or the directory,
+        // and only time releases that.
+        Err(err) if in_use(&err) => retrying(deadline, dest, || replace_existing(staging, dest))
+            .map_err(Error::io("place", dest)),
         Err(err) => Err(Error::io("place", dest)(err)),
+    }
+}
+
+/// Repeats `step` while Windows answers that the file is in use, until
+/// `deadline`; any other error returns at once, and so does the budget running
+/// out. Announced on stderr once, at the first pause — the engine has no UI,
+/// and a swap that goes quiet for seconds is indistinguishable from a hang
+/// (the shape `http`'s retry announcement settled on, from the first retry
+/// rather than the first attempt, so a healthy swap stays silent).
+fn retrying(
+    deadline: Instant,
+    path: &Path,
+    mut step: impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    let mut delay = RETRY_BACKOFF;
+    let mut announced = false;
+    loop {
+        let Err(err) = step() else { return Ok(()) };
+        let left = deadline.saturating_duration_since(Instant::now());
+        if !in_use(&err) || left.is_zero() {
+            return Err(err);
+        }
+        if !announced {
+            eprintln!(
+                "jdk: {} is in use ({err}) — retrying for up to {left:.0?}",
+                path.display()
+            );
+            announced = true;
+        }
+        thread::sleep(delay.min(left));
+        delay = delay.saturating_mul(2);
     }
 }
 
@@ -125,14 +191,26 @@ pub fn remove_running(path: &Path) -> Result<Option<PathBuf>> {
 }
 
 /// Whether Windows refused because something else is using the file — the
-/// refusal a rename can still get around. There are TWO of them, and taking
-/// only the first makes the outcome a race: ACCESS_DENIED (5) is what a
-/// mapped executable image raises, SHARING_VIOLATION (32) what an open handle
-/// without `FILE_SHARE_DELETE` raises, and a starting process gives one or the
-/// other depending on how far its loader has got.
-fn in_use(err: &io::Error) -> bool {
+/// refusal a rename can still get around, and the one worth waiting out. There
+/// are TWO of them, and taking only the first makes the outcome a race:
+/// ACCESS_DENIED (5) is what a mapped executable image raises,
+/// SHARING_VIOLATION (32) what an open handle without `FILE_SHARE_DELETE`
+/// raises, and a starting process gives one or the other depending on how far
+/// its loader has got.
+pub fn in_use(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::PermissionDenied
         || (cfg!(windows) && err.raw_os_error() == Some(32))
+}
+
+/// Whether Windows refused for want of space, which no retry and no rename
+/// gets around — the caller's only use for it is telling the user WHY. Two
+/// codes again: DISK_FULL (112) for a write that found no room,
+/// HANDLE_DISK_FULL (39) for one that ran the volume out mid-flush. The kind
+/// covers both on a current toolchain; the raw codes are checked as well so
+/// the answer does not hinge on std's mapping table.
+pub fn disk_full(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::StorageFull
+        || (cfg!(windows) && matches!(err.raw_os_error(), Some(39 | 112)))
 }
 
 #[cfg(test)]
@@ -247,6 +325,91 @@ mod tests {
 
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    /// Windows tells the two refusals apart by raw code, not by kind, so the
+    /// mapping is worth pinning: 32 and 39 have no `ErrorKind` of their own
+    /// and would fall through a kind-only test.
+    #[test]
+    fn the_two_windows_refusals_are_recognized_by_code() {
+        assert!(in_use(&io::Error::from(io::ErrorKind::PermissionDenied)));
+        assert!(disk_full(&io::Error::from(io::ErrorKind::StorageFull)));
+        if cfg!(windows) {
+            assert!(in_use(&io::Error::from_raw_os_error(32)), "sharing");
+            assert!(disk_full(&io::Error::from_raw_os_error(39)), "handle full");
+            assert!(disk_full(&io::Error::from_raw_os_error(112)), "disk full");
+        }
+        assert!(!in_use(&io::Error::from(io::ErrorKind::NotFound)));
+        assert!(!disk_full(&io::Error::from(io::ErrorKind::NotFound)));
+    }
+
+    /// BUG-06: the swap that lands mid-scan used to be a hard failure, and on
+    /// a machine with real-time protection that is a coin toss on every
+    /// update. Nothing is executing here — the refusal comes from a handle
+    /// alone — so only the retry can make this succeed.
+    #[cfg(windows)]
+    #[test]
+    fn a_swap_waits_out_a_handle_that_is_released() {
+        let temp = TempDir::new().unwrap();
+        let staging = temp.path().join("jdk.exe.new");
+        let dest = temp.path().join("jdk.exe");
+        fs::write(&staging, b"v2").unwrap();
+        fs::write(&dest, b"v1").unwrap();
+
+        let held = test_support::hold(&dest);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            drop(held);
+        });
+
+        replace_running(&staging, &dest).unwrap();
+
+        assert_eq!(fs::read(&dest).unwrap(), b"v2");
+        assert!(!staging.exists());
+    }
+
+    /// The other end of the budget: a handle nobody ever releases is a
+    /// permanent block, and the swap must say so rather than wait forever.
+    /// The destination keeps its bytes — the aside is what could not be taken.
+    #[cfg(windows)]
+    #[test]
+    fn a_swap_gives_up_on_a_handle_that_is_never_released() {
+        let temp = TempDir::new().unwrap();
+        let staging = temp.path().join("jdk.exe.new");
+        let dest = temp.path().join("jdk.exe");
+        fs::write(&staging, b"v2").unwrap();
+        fs::write(&dest, b"v1").unwrap();
+        let _held = test_support::hold(&dest);
+
+        let err = replace_running(&staging, &dest).unwrap_err();
+
+        assert!(err.to_string().contains("aside"), "{err}");
+        assert_eq!(fs::read(&dest).unwrap(), b"v1", "the live copy survives");
+    }
+
+    /// The rollback: a handle on the STAGING blocks the placement but not the
+    /// aside, so `dest` is emptied and then cannot be refilled — the one path
+    /// where the destination would vanish. Holding a real handle is what makes
+    /// this reachable without fault injection.
+    #[cfg(windows)]
+    #[test]
+    fn a_placement_that_fails_after_the_aside_puts_the_destination_back() {
+        let temp = TempDir::new().unwrap();
+        let staging = temp.path().join("jdk.exe.new");
+        let dest = temp.path().join("jdk.exe");
+        fs::write(&staging, b"v2").unwrap();
+        fs::write(&dest, b"v1").unwrap();
+        let _held = test_support::hold(&staging);
+
+        let err = replace_running(&staging, &dest).unwrap_err();
+
+        assert!(err.to_string().contains("place"), "{err}");
+        assert_eq!(
+            fs::read(&dest).unwrap(),
+            b"v1",
+            "the aside was rolled back onto the destination"
+        );
+        assert!(!temp.path().join("jdk.exe.old").exists(), "and consumed");
     }
 
     /// A swap that cannot happen must cost the destination nothing. The

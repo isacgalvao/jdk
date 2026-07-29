@@ -336,6 +336,29 @@ pub fn serve_catalog(server: &Server, packages: &[Package]) {
     server.route("/index.json", move |_| Response::ok(body.clone()));
 }
 
+/// Opens `path` the way a real-time scanner opens a fresh `.exe`: readable,
+/// but withholding `FILE_SHARE_DELETE` and `FILE_SHARE_WRITE`. While the
+/// returned handle lives, Windows refuses to delete the file (os error 32),
+/// to copy over it (32) and to rename over it (5) — the genuine article, not
+/// a fake, arriving through the same Win32 calls Defender's does.
+///
+/// This is the ONLY blocker that survives a sweep, which is why the swap
+/// tests reach for it: `remove_file` silently clears a read-only attribute
+/// and `remove_dir_all` deletes a directory even with an open handle inside,
+/// so neither shape stays put long enough to block anything.
+#[cfg(windows)]
+pub fn hold(path: &Path) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    // windows-sys is not a dependency here; FILE_SHARE_READ is 1 by Win32
+    // definition and has been since NT 3.1.
+    const FILE_SHARE_READ: u32 = 1;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+        .expect("hold the file the way a scanner does")
+}
+
 /// Paths of the workspace `jdk-shim` and `fake_java` binaries, built on
 /// demand — integration tests of other crates cannot use `CARGO_BIN_EXE_*`
 /// (those exist only inside the owning crate's own tests).
