@@ -19,17 +19,17 @@ base64.workspace = true
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
 # Trust roots from the Windows certificate store (corporate CAs live there).
 rustls-native-certs = "0.8"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.11"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror = "2"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # M4 pillar: NTFS junction for `current` (no admin, unlike symlinks) and the
 # registry API for HKCU\Environment (never setx).
 junction = "2.0.0"
-windows-sys = { version = "0.61", features = [
+windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     # M4: WM_SETTINGCHANGE broadcast (env) and the elevation probe (admin).
@@ -39,5 +39,5 @@ windows-sys = { version = "0.61", features = [
 winreg = "0.56.0"
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 test-support.workspace = true

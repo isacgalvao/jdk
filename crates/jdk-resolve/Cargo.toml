@@ -12,7 +12,7 @@ publish = true
 
 [dev-dependencies]
 criterion = "0.8"
-tempfile = "3"
+tempfile.workspace = true
 
 [[bench]]
 name = "shim_bench"

@@ -19,10 +19,12 @@ license = "Apache-2.0"
 repository = "https://github.com/isacgalvao/jdk"
 publish = false
 
-# The internal crates, plus the two the signature anchor rests on. Most
-# external dependencies are still declared per crate; these two are hoisted
-# because jdk-core verifies what test-support signs, and the pair has to be
-# the same ed25519 on both sides of that test.
+# Every dependency more than one crate uses. A version lives here once, so two
+# crates cannot drift onto different requirements for the same library — which
+# matters most where the drift would be invisible: jdk-core verifies what
+# test-support signs, and the pair has to be the same ed25519 on both sides of
+# that test. Anything a single crate uses stays in that crate's manifest, where
+# the reason for it is next to the code that has the reason.
 [workspace.dependencies]
 # `version` is the requirement cargo bakes into the published manifests, and
 # cargo has no way to inherit the package version into a dependency requirement
@@ -41,6 +43,29 @@ test-support = { path = "crates/test-support" }
 # binary that verifies one signature per update.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 base64 = "0.22"
+
+# The index contract's serialization, shared by the client that reads it, the
+# generator that writes it and the fixtures that stand in for it.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Every sha256 in the project — the download checksum, the index digests and
+# the SSHSIG message hash — comes from this one.
+sha2 = "0.11"
+# JDK archives and release bundles. `default-features = false` keeps out the
+# compression backends nothing here produces or reads; deflate is what the
+# vendors ship and what Compress-Archive writes.
+zip = { version = "8", default-features = false, features = ["deflate"] }
+# Argument parsing for the two binaries that take arguments (the shim parses
+# nothing — it forwards).
+clap = { version = "4", features = ["derive"] }
+# Win32 bindings. No features here on purpose: each crate adds the ones it
+# needs and inherits nothing it does not, which is what keeps the shim's
+# firewall (Foundation + Console, nothing else) a property of jdk-shim's own
+# manifest rather than of this line.
+windows-sys = "0.61"
+# Test scratch directories, in the dev-dependencies of every crate that has
+# tests.
+tempfile = "3"
 
 # Size-optimized profile for the shim, which is copied byte-identically once
 # per JDK tool — so every byte counts.
