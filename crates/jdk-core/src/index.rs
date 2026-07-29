@@ -14,13 +14,33 @@
 //! The client caches every file with ETag + TTL and verifies each platform
 //! file against the sha256 its index entry records, so the generator must
 //! recompute `size`/`sha256` on every publish.
+//!
+//! # Compatibility
+//!
+//! The `version` in `index.json` against [`SCHEMA_VERSION`] here is the whole
+//! contract between generator and client, and the rule is one sentence each
+//! way. An ADDITIVE change — a new optional field, another entry, another
+//! platform file — does not bump it: every client already ignores what it
+//! does not know. A change of SHAPE — a field renamed, removed, retyped, or
+//! added that a reader must honor to be correct — bumps it. A client that
+//! meets a version above its own refuses the file and names the way to a
+//! client that reads it, instead of guessing at a shape nobody told it about;
+//! at or below its own, the file parses normally.
+//!
+//! That refusal is [`schema_skew`]'s, which reads `version` and nothing else,
+//! and it is decided BEFORE the strict deserialization — a bump being
+//! precisely the license to have changed everything that deserialization
+//! expects. The one field the rule cannot protect is `version` itself: it
+//! keeps its name and its shape, an unsigned 32-bit integer, forever, being
+//! what every future reader looks at first. A value outside that range is a
+//! malformed index by this contract, and reads as one.
 
 use crate::error::{Error, Result};
 use jdk_resolve::version::Version;
 use serde::{Deserialize, Serialize};
 
-/// Schema version this client understands. Bumped only for breaking changes;
-/// adding optional fields does not bump it.
+/// Schema version this client understands; the compatibility rule it takes
+/// part in is in the module docs.
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// `index.json` — table of contents of the index repository.
@@ -36,16 +56,30 @@ pub struct IndexFile {
 
 impl IndexFile {
     pub fn parse(bytes: &[u8]) -> Result<IndexFile> {
-        let index: IndexFile = serde_json::from_slice(bytes)
-            .map_err(|err| Error::Catalog(format!("unparseable index.json: {err}")))?;
-        if index.version > SCHEMA_VERSION {
+        if let Some(found) = schema_skew(bytes) {
             return Err(Error::Catalog(format!(
-                "index schema version {} is newer than this client understands ({SCHEMA_VERSION}); update jdk",
-                index.version
+                "index.json declares schema version {found}; this jdk reads version {SCHEMA_VERSION}\n  \
+                 → `jdk update` gets a client that understands it\n  \
+                 → or reinstall with install.ps1"
             )));
         }
-        Ok(index)
+        serde_json::from_slice(bytes)
+            .map_err(|err| Error::Catalog(format!("unparseable index.json: {err}")))
     }
+}
+
+/// The declared schema version when it is one this client cannot read — above
+/// [`SCHEMA_VERSION`]. Reads `version` and nothing else, so it answers for an
+/// index whose every other field moved, which is what a bump allows. `None`
+/// also covers a file carrying no readable `version` at all: that is a
+/// malformed index, and [`IndexFile::parse`] reports it as one.
+pub fn schema_skew(bytes: &[u8]) -> Option<u32> {
+    #[derive(Deserialize)]
+    struct Versioned {
+        version: u32,
+    }
+    let probe: Versioned = serde_json::from_slice(bytes).ok()?;
+    (probe.version > SCHEMA_VERSION).then_some(probe.version)
 }
 
 /// One platform file listed by `index.json`.
@@ -231,11 +265,32 @@ mod tests {
         assert!(serde_json::from_slice::<Vec<Package>>(json.as_bytes()).is_err());
     }
 
+    /// The gate runs BEFORE the strict deserialization, because a bump is
+    /// exactly the license to change the rest of the file: a v2 index whose
+    /// shape moved (no `files`, an `entries` nobody has ever heard of) still
+    /// has to come back naming the remedy, never as a serde miss.
     #[test]
-    fn newer_schema_version_is_rejected() {
-        let json = r#"{"version": 2, "updated": "x", "files": []}"#;
-        let err = IndexFile::parse(json.as_bytes()).unwrap_err();
-        assert!(err.to_string().contains("update jdk"), "{err}");
+    fn a_newer_schema_version_is_refused_before_its_shape_is_read() {
+        let json = r#"{"version": 2, "entries": []}"#;
+        let err = IndexFile::parse(json.as_bytes()).unwrap_err().to_string();
+        assert!(err.contains("schema version 2"), "{err}");
+        assert!(err.contains("jdk update"), "{err}");
+        assert!(err.contains("install.ps1"), "{err}");
+        assert!(
+            !err.contains("unparseable"),
+            "not a deserialization error: {err}"
+        );
+    }
+
+    #[test]
+    fn the_known_schema_version_parses_and_an_unversioned_index_does_not() {
+        assert_eq!(schema_skew(INDEX_JSON.as_bytes()), None);
+        assert_eq!(schema_skew(br#"{"version": 7}"#), Some(7));
+
+        let err = IndexFile::parse(br#"{"updated": "x", "files": []}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unparseable index.json"), "{err}");
     }
 
     #[test]
