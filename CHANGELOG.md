@@ -7,6 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-29
+
+A release about proof and reversibility. `jdk update` now refuses anything it
+cannot check against a signature this binary carries, and `jdk setup --undo`
+gives back the machine setup changed.
+
+### Added
+
+- **`jdk setup --undo`** reverses what setup did: it restores the previous
+  `JAVA_HOME` with the registry type it originally had, removes only the PATH
+  entries setup added, removes the shims and the junction, and broadcasts the
+  change so open consoles see it. Installed JDKs are kept — `--purge` removes
+  the store as well. The previous `JAVA_HOME` had been recorded since 0.1.0 for
+  exactly this and never read.
+- `jdk doctor` checks two things it used to take on faith: that
+  `bin\jdk-shim.exe` exists and matches the shims on disk — it is what `jdk
+  setup` copies from, so a missing or stale one breaks the documented remedy
+  while doctor reports health — and that the published index is one this build
+  can read. When `jdk setup` is not the fix, doctor now says what is.
+- A bad connection stops looking like a hang. HTTP retries were silent; from the
+  second attempt on, each one names what failed and how long the pause will be.
+
+### Changed
+
+- **The live-catalog notice is now only about early access.** Since 0.3.0,
+  `jdk install` reported whenever a build came from the foojay API rather than
+  the index. It now reports only early-access builds, where the index genuinely
+  carries nothing for the selector. A GA release the index has not caught up
+  with resolves quietly: that case is ordinary, and the line was landing in the
+  middle of every `java` that auto-installed one in CI. The old wording also
+  called such a download "unverified against the index", which was never true —
+  a sha256 is mandatory on both paths.
+- There is a way back from an update, and the tool names it. When `jdk update`
+  declines because you are already above the latest release, and after every
+  successful update, the message points at `install.ps1 -Version`. `--force`
+  now admits in its help that it downgrades when the release is older than what
+  you run, instead of describing only reinstallation.
+- The catalog index carries a schema version this client enforces. An index
+  newer than the client understands is refused with the way forward, rather
+  than failing as unparseable JSON — a client can only be protected by a rule
+  it already shipped with, which is why this lands while the installed base is
+  small enough for it not to matter.
+
+### Fixed
+
+- An update no longer leaves the tools half-replaced in silence. The shims are
+  staged and then swapped in two phases, and a tool that refuses is reported —
+  every one of them, not just the first to fail.
+- The steps of the executable swap that have no fallback are retried under one
+  shared deadline, so an update no longer fails outright because a real-time
+  scanner held a freshly written `.exe` for a moment.
+- `jdk uninstall` stops reporting a full disk as a file in use; only a genuine
+  in-use error defers now.
+- Failures where Windows most often bites explain themselves: a file held by
+  another process names antivirus as the likely cause, and a full disk names
+  space.
+
+### Security
+
+- **`jdk update` is anchored to a signature this binary carries.** Every release
+  now publishes `SHA256SUMS` and a detached `SHA256SUMS.sig` — an ed25519
+  SSHSIG whose public half is compiled into `jdk.exe` — and the updater checks
+  it before downloading anything. A release missing either file is refused, so
+  "unverified" is no longer a state the release host can put a client into.
+  Until now the only check was a `.sha256` sidecar served by whoever served the
+  zip, which can prove a transfer but never a release. The signed line names the
+  asset by version, so a signature lifted from another release covers nothing
+  this update will ask for.
+- **`install.ps1` verifies that same anchor** whenever `ssh-keygen` is present
+  (every Windows 10 1809 and later ships it). It falls back to the per-file
+  sidecar only for facts about your machine or the release's age — no
+  `ssh-keygen`, or a release older than 0.6.0 — and never for something the
+  release host chose: a `SHA256SUMS` published without its signature aborts.
+- **The installer one-liner is served from the release** rather than a mutable
+  branch: `irm https://github.com/isacgalvao/jdk/releases/latest/download/install.ps1 | iex`.
+- **Signing left the job that compiles.** The release pipeline is four jobs, and
+  the one that runs cargo — and with it every build script in the dependency
+  tree — holds a read-only token and no signing identity of any kind. Signing,
+  attestation and publishing happen afterwards, in a job that compiles nothing
+  and consumes the artifact the build produced.
+- cosign is gone and the SLSA build provenance stays: two Sigstore chains from
+  the same identity were answering the same question. Verifying a release by
+  hand is now `ssh-keygen -Y verify` over `SHA256SUMS` — the same check the
+  updater makes, against the same key — plus `gh attestation verify` for the
+  zip. Both commands are in the release notes of every release.
+- The update bundle is extracted under a ceiling that fits it — 128 MiB and 64
+  entries, against four files — instead of the 4 GiB one meant for JDK
+  archives.
+
+### Internal
+
+- A tag run's workflow artifact does not contain `SHA256SUMS.sig`: the signature
+  is produced by the release job that runs after the build. The GitHub release
+  carries both, and that is what `jdk update` and `install.ps1` read.
+- Dependabot groups patch and minor updates into one pull request, merged
+  automatically once CI has passed on that exact commit, and gives every major
+  a pull request of its own. A grouped update once carried six majors of the
+  zip library past review.
+- `install.ps1`'s verification logic runs in CI against a loopback server and a
+  throwaway signing key, covering the paths that decide whether a checksum is
+  trusted.
+
 ## [0.5.0] - 2026-07-28
 
 A correctness release. Nothing new to do — the things that were already there
@@ -120,7 +222,8 @@ First public release — a Windows-first Java version manager.
 - PowerShell installer (`install.ps1`) with SHA-256 verification, plus release zips carrying `jdk.exe`, `jdk-shim.exe`, `LICENSE` and `README.md` alongside `.sha256` sidecars.
 - Published on crates.io: [`jdk`](https://crates.io/crates/jdk), [`jdk-core`](https://crates.io/crates/jdk-core) and [`jdk-resolve`](https://crates.io/crates/jdk-resolve).
 
-[Unreleased]: https://github.com/isacgalvao/jdk/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/isacgalvao/jdk/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.6.0
 [0.5.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.5.0
 [0.4.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.4.0
 [0.3.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.3.0
