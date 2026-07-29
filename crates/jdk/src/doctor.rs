@@ -13,19 +13,28 @@ use jdk_core::catalog::DEFAULT_INDEX_URL;
 use jdk_core::current::{self, Current};
 use jdk_core::download::sha256_hex;
 use jdk_core::env::{self, JavaHomeState, RegKey};
-use jdk_core::http::{Http, Retry};
-use jdk_core::index::{IndexFile, safe_path_segments};
+use jdk_core::http::{Http, Reply, Retry};
+use jdk_core::index::{IndexFile, SCHEMA_VERSION, safe_path_segments, schema_skew};
 use jdk_core::{admin, release, shims};
 use jdk_resolve::config::Config;
 use jdk_resolve::version::Version;
 use jdk_resolve::{exit, store};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// User PATHs longer than this are close to the ~2047-char ceiling several
 /// consumers still enforce.
 const PATH_NEAR_LIMIT: usize = 1800;
+
+/// Ceiling for the index.json the probe reads to see which schema version is
+/// published. The real fetch has its own, larger one inside the cache (32
+/// MiB), so an index between the two would read here as a note about a body
+/// that did not arrive while every install kept working — an accepted
+/// divergence, since a table of contents that outgrows a megabyte is a
+/// finding of its own.
+const MAX_INDEX_PROBE: u64 = 1024 * 1024;
 
 pub fn run(root: &Path) -> Result<(), Fail> {
     let (user, _hermetic) = crate::user_env()?;
@@ -48,6 +57,7 @@ pub fn run(root: &Path) -> Result<(), Fail> {
     checks.push(update_available());
     checks.push(cache_integrity(root));
     checks.push(cli_copy(root));
+    checks.push(shim_source(root));
     checks.push(elevation());
 
     let width = checks
@@ -428,8 +438,9 @@ fn pin(root: &Path, config: &Config) -> Check {
     }
 }
 
-/// Fast reachability probe: one attempt, short timeout. Failure is a note,
-/// never a failure — offline is not a disease; install/available say more.
+/// Fast reachability probe: one attempt, short timeout, and the schema
+/// version the answer declares. Failure is a note, never a failure — offline
+/// is not a disease; install/available say more.
 fn index_reachable() -> Check {
     let index_url = crate::remote::env_url("JDK_INDEX");
     let policy = crate::remote::url_policy(
@@ -447,11 +458,42 @@ fn index_reachable() -> Check {
     let reply = Http::with_request_timeout(policy, quick, Duration::from_secs(3))
         .and_then(|http| http.get(&url, "doctor", &[]));
     match reply {
-        Ok(reply) if reply.status() == 200 => pass("index", format!("reachable ({url})")),
+        Ok(reply) if reply.status() == 200 => published_schema(&url, reply),
         Ok(reply) => note("index", format!("{url} answered {}", reply.status())),
         Err(err) => note(
             "index",
             format!("unreachable ({err}) — fine offline; install/available need it"),
+        ),
+    }
+}
+
+/// The verdict on an index.json that answered 200 — which is not yet an
+/// index (IDX-06). A published index this client cannot read is not silence:
+/// the catalog falls through to the live foojay API and installs keep
+/// working, so it reads as a note pointing at `jdk update`, the stance
+/// [`update_available`] already takes for a world that moved ahead of this
+/// binary. Otherwise the body still has to BE one — a captive portal's login
+/// page, a truncated file and an empty answer all reply 200, and every one of
+/// them means installs are silently going to foojay while this check says
+/// health. ✓ only for a body that parses.
+fn published_schema(url: &str, reply: Reply) -> Check {
+    let body = match reply.bytes(MAX_INDEX_PROBE) {
+        Ok(body) => body,
+        Err(err) => return note("index", format!("{url} answered 200, then {err}")),
+    };
+    if let Some(found) = schema_skew(&body) {
+        return note(
+            "index",
+            format!(
+                "{url} publishes schema v{found}, newer than this jdk reads (v{SCHEMA_VERSION}) — run `jdk update`"
+            ),
+        );
+    }
+    match IndexFile::parse(&body) {
+        Ok(_) => pass("index", format!("reachable ({url})")),
+        Err(err) => note(
+            "index",
+            format!("{url} answered 200 but the body is not an index.json: {err}"),
         ),
     }
 }
@@ -493,6 +535,17 @@ fn cache_integrity(root: &Path) -> Check {
         Err(_) => return pass("cache", "empty — nothing fetched yet"),
         Ok(bytes) => bytes,
     };
+    // Schema skew before corruption: the cached file is intact, this client
+    // is the one that cannot read it, and re-downloading would only fetch the
+    // same version again (IDX-06).
+    if let Some(found) = schema_skew(&bytes) {
+        return note(
+            "cache",
+            format!(
+                "cached index.json is schema v{found}, newer than this jdk reads (v{SCHEMA_VERSION}) — run `jdk update`"
+            ),
+        );
+    }
     let index = match IndexFile::parse(&bytes) {
         Ok(index) => index,
         Err(err) => {
@@ -567,6 +620,117 @@ fn cli_copy(root: &Path) -> Check {
         ),
         _ => note("jdk.exe", "cannot compare the store copy"),
     }
+}
+
+/// The `bin\jdk-shim.exe` every later `jdk setup` copies the shims from, and
+/// whether the materialized set still matches it (BUG-15). `setup` resolves
+/// its source as a sibling of the running jdk.exe, so the store copy has
+/// nothing to materialize from once this one is gone — the recovery path
+/// BUG-01 restored — and a copy that disagrees with the shims means the next
+/// `setup` hands out a different build than the one in use, which is exactly
+/// the state a partially refused materialization leaves behind. Shims that
+/// are MISSING are not counted here: `shims` above owns that verdict.
+fn shim_source(root: &Path) -> Check {
+    let source = root.join("bin").join("jdk-shim.exe");
+    if !source.exists() {
+        return absent_shim_source(&source, root);
+    }
+    let Ok(payload) = fs::read(&source) else {
+        return note(
+            "jdk-shim.exe",
+            format!("cannot read {} to compare it", source.display()),
+        );
+    };
+    let dir = store::shims(root);
+    let (mut matched, mut differ, mut unreadable) = (0, Vec::new(), Vec::new());
+    for tool in shims::TOOLS {
+        // A shim that is absent is `shims`' verdict, not this one; a shim that
+        // cannot be READ is neither a match nor a mismatch, and saying either
+        // would be a claim this never checked.
+        match fs::read(dir.join(format!("{}.exe", tool.name))) {
+            Ok(shim) if shim == payload => matched += 1,
+            Ok(_) => differ.push(tool.name),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => unreadable.push(tool.name),
+        }
+    }
+    if !differ.is_empty() {
+        return broken(
+            "jdk-shim.exe",
+            format!(
+                "shims differ from {}: {}",
+                source.display(),
+                differ.join(", ")
+            ),
+            "jdk setup",
+        );
+    }
+    if !unreadable.is_empty() {
+        return note(
+            "jdk-shim.exe",
+            format!("cannot read to compare: {}", unreadable.join(", ")),
+        );
+    }
+    match matched {
+        0 => pass(
+            "jdk-shim.exe",
+            format!(
+                "{} present; no materialized shim to compare",
+                source.display()
+            ),
+        ),
+        matched => pass(
+            "jdk-shim.exe",
+            format!(
+                "{} matches the {matched} materialized shims",
+                source.display()
+            ),
+        ),
+    }
+}
+
+/// The verdict when `bin\jdk-shim.exe` is not there, which depends entirely on
+/// whether a `jdk setup` can still put it there: setup copies the shim sitting
+/// beside the jdk.exe it runs as, so from an unpacked release — or a fresh
+/// install that has not run setup yet — this is a step still to take, exactly
+/// as [`cli_copy`] reads a missing `bin\jdk.exe`. Only when no reachable
+/// jdk.exe has a shim beside it is the repair path itself broken, and only
+/// then does this fail the run. Its remedies go cheapest first: every
+/// materialized shim IS a byte-identical copy of the source, so one of them
+/// hands `setup` its source back without a download.
+fn absent_shim_source(source: &Path, root: &Path) -> Check {
+    let beside_me = std::env::current_exe()
+        .map(|me| me.with_file_name("jdk-shim.exe"))
+        .is_ok_and(|shim| fs::metadata(shim).is_ok_and(|meta| meta.is_file()));
+    if beside_me {
+        return note(
+            "jdk-shim.exe",
+            format!(
+                "no {} yet — `jdk setup` places it, from the jdk-shim.exe beside the jdk.exe you run",
+                source.display()
+            ),
+        );
+    }
+    let dir = store::shims(root);
+    let salvage = shims::TOOLS
+        .iter()
+        .map(|tool| dir.join(format!("{}.exe", tool.name)))
+        .find(|shim| fs::metadata(shim).is_ok_and(|meta| meta.is_file()));
+    let fix = match salvage {
+        Some(shim) => format!(
+            "jdk setup --shim-source {}, or reinstall with install.ps1",
+            shim.display()
+        ),
+        None => "reinstall with install.ps1, which places jdk-shim.exe beside jdk.exe".to_string(),
+    };
+    broken(
+        "jdk-shim.exe",
+        format!(
+            "no {} — `jdk setup` has nothing to materialize the shims from",
+            source.display()
+        ),
+        fix,
+    )
 }
 
 /// Informative ONLY: jdk writes per-user state and never

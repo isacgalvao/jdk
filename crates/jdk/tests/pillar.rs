@@ -34,6 +34,9 @@ struct World {
     /// doctor's release probe must stay hermetic); tests point it at a
     /// loopback release server.
     releases: String,
+    /// `JDK_INDEX`, same arrangement: dead by default, pointed at a loopback
+    /// index server by the tests that care what the index publishes.
+    index: String,
 }
 
 impl World {
@@ -55,6 +58,7 @@ impl World {
             shim_source,
             fake_java,
             releases: dead_url(),
+            index: dead_url(),
         }
     }
 
@@ -71,7 +75,7 @@ impl World {
             .env("JDK_ROOT", &self.root)
             .env("JDK_ENV_KEY", self.user.path())
             .env("JDK_MACHINE_ENV_KEY", self.machine.path())
-            .env("JDK_INDEX", dead_url())
+            .env("JDK_INDEX", &self.index)
             .env("JDK_FOOJAY", dead_url())
             .env("JDK_RELEASES", &self.releases)
             .output()
@@ -754,6 +758,7 @@ fn doctor_reports_all_clear_in_a_healthy_sandbox() {
         "pin",
         "cache",
         "jdk.exe",
+        "jdk-shim.exe",
     ] {
         let line = doctor_line(&report, name);
         assert!(
@@ -1000,6 +1005,153 @@ fn doctor_names_a_corrupt_cache() {
     .unwrap();
 
     assert_broken(&world, "cache", "sha256 mismatch", "re-downloads");
+}
+
+/// IDX-06: a cached index from a newer schema is not corruption — the file is
+/// intact and this client is the one that cannot read it, so deleting the
+/// cache would fetch the same version again. The remedy is a newer client,
+/// and the catalog keeps working through foojay meanwhile: a note, not a ✗.
+#[test]
+fn doctor_notes_a_cached_index_from_a_newer_schema() {
+    let world = healthy();
+    let cache = world.root.join("cache").join("index");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(
+        cache.join("index.json"),
+        br#"{"version": 2, "entries": []}"#,
+    )
+    .unwrap();
+
+    let output = world.jdk(&["doctor"]);
+
+    assert_ok(&output);
+    let report = stdout(&output);
+    let line = doctor_line(&report, "cache");
+    assert!(line.starts_with('!'), "informative, not broken: {line}");
+    assert!(line.contains("schema v2"), "{line}");
+    assert!(line.contains("jdk update"), "{line}");
+}
+
+/// IDX-06: the same skew seen live, before anything is cached — otherwise the
+/// doctor reports a reachable index while every install silently falls back
+/// to the live API.
+#[test]
+fn doctor_notes_a_published_index_from_a_newer_schema() {
+    let mut world = healthy();
+    let server = Server::start();
+    server.route("/index.json", |_| {
+        Response::ok(r#"{"version": 2, "entries": []}"#)
+    });
+    world.index = server.url().to_string();
+
+    let output = world.jdk(&["doctor"]);
+
+    assert_ok(&output);
+    let report = stdout(&output);
+    let line = doctor_line(&report, "index");
+    assert!(line.starts_with('!'), "informative, not broken: {line}");
+    assert!(line.contains("schema v2"), "{line}");
+    assert!(line.contains("jdk update"), "{line}");
+}
+
+/// BUG-15: `setup` materializes the shims from a `jdk-shim.exe` beside the
+/// running jdk.exe. Run AS the store copy — the jdk.exe every remedy tells
+/// the user to run — a missing `bin\jdk-shim.exe` is that repair path broken,
+/// and the way out is offered cheapest first: every materialized shim is a
+/// byte-identical copy of the source, so one of them hands it back offline.
+#[test]
+fn doctor_fails_the_store_copy_with_no_shim_beside_it() {
+    let world = healthy();
+    let stored = world.root.join("bin").join("jdk.exe");
+    fs::remove_file(world.root.join("bin").join("jdk-shim.exe")).unwrap();
+
+    let output = world.jdk_at(&stored, &["doctor"]);
+
+    let report = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "stdout:\n{report}");
+    let line = doctor_line(&report, "jdk-shim.exe");
+    assert!(line.starts_with('✗'), "{line}");
+    assert!(line.contains("nothing to materialize"), "{line}");
+    assert!(
+        report.contains("--shim-source"),
+        "the offline way out comes first:\n{report}"
+    );
+    assert!(report.contains("install.ps1"), "{report}");
+}
+
+/// The same absence read from a jdk.exe that DOES have its shim beside it —
+/// an unpacked release, or anything before the first `jdk setup`. Nothing is
+/// broken there: the step is pending, exactly as a missing `bin\jdk.exe` is.
+#[test]
+fn doctor_reads_a_pending_shim_source_as_pending_not_broken() {
+    let world = World::new();
+
+    let report = stdout(&world.jdk(&["doctor"]));
+
+    let line = doctor_line(&report, "jdk-shim.exe");
+    assert!(line.starts_with('!'), "pending, not broken: {line}");
+    assert!(line.contains("places it"), "{line}");
+    assert!(
+        line.contains("beside the jdk.exe you run"),
+        "the note names its source instead of promising on its own: {line}"
+    );
+}
+
+/// BUG-15: a shim that cannot be READ is neither a match nor a mismatch, and
+/// claiming either would be the check speaking about what it never saw. A
+/// directory wearing the name is the cheapest way to produce one — and a
+/// state the update sweep already has to survive.
+#[test]
+fn doctor_notes_a_shim_it_cannot_read() {
+    let world = healthy();
+    let javac = world.root.join("shims").join("javac.exe");
+    fs::remove_file(&javac).unwrap();
+    fs::create_dir(&javac).unwrap();
+
+    let output = world.jdk(&["doctor"]);
+
+    assert_ok(&output);
+    let report = stdout(&output);
+    let line = doctor_line(&report, "jdk-shim.exe");
+    assert!(
+        line.starts_with('!'),
+        "unreadable is not a mismatch: {line}"
+    );
+    assert!(line.contains("javac"), "{line}");
+}
+
+/// IDX-06: a 200 is not an index. A captive portal's login page is the shape
+/// this meets in the wild, and calling it reachable would hide every install
+/// falling through to the live API.
+#[test]
+fn doctor_notes_an_index_url_answering_something_else() {
+    let mut world = healthy();
+    let server = Server::start();
+    server.route("/index.json", |_| Response::ok("<html>sign in</html>"));
+    world.index = server.url().to_string();
+
+    let output = world.jdk(&["doctor"]);
+
+    assert_ok(&output);
+    let report = stdout(&output);
+    let line = doctor_line(&report, "index");
+    assert!(line.starts_with('!'), "{line}");
+    assert!(line.contains("not an index.json"), "{line}");
+}
+
+/// BUG-15: the same source present but disagreeing with what was
+/// materialized — what a partially refused swap leaves behind, and what makes
+/// the next `jdk setup` hand out a build other than the one in use.
+#[test]
+fn doctor_names_shims_that_no_longer_match_the_bin_shim() {
+    let world = healthy();
+    fs::write(
+        world.root.join("shims").join("javac.exe"),
+        b"an older build",
+    )
+    .unwrap();
+
+    assert_broken(&world, "jdk-shim.exe", "javac", "jdk setup");
 }
 
 #[test]
