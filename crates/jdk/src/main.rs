@@ -109,7 +109,8 @@ enum Command {
     Doctor,
     /// Update jdk itself to the latest release
     Update {
-        /// Reinstall even when already on the latest release
+        /// Reinstall even when already on the latest release — and, from a
+        /// build newer than the latest, downgrade to it
         #[arg(long)]
         force: bool,
     },

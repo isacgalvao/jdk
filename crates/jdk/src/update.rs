@@ -47,6 +47,14 @@ pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
     let remote = release::latest(&http, &source).map_err(Fail::engine)?;
     if decide(&local, &remote, force) == Decision::Skip {
         eprintln!("jdk: already up to date ({local})");
+        // The one reading of "up to date" that leaves a user wanting to go
+        // the other way: this build is AHEAD of the latest release. Nothing
+        // here installs a named version — the installer does (BUG-08).
+        if remote < local {
+            eprintln!(
+                "  → this build is ahead of the latest release ({remote}); install.ps1 -Version {remote} goes back to it"
+            );
+        }
         return Ok(());
     }
 
@@ -102,6 +110,13 @@ pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
         eprintln!(
             "  → the old copy was moved aside to jdk.exe.old; the next `jdk update` cleans it up"
         );
+    }
+    // Said right where the version changed, because the aside above is swept
+    // by the next run and is no rollback artifact to count on (BUG-08). Not
+    // said when `--force` reinstalled the same version: there is nowhere to
+    // go back TO.
+    if remote != local {
+        eprintln!("  → to go back: install.ps1 -Version {local} installs a specific version");
     }
     Ok(())
 }

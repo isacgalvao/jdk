@@ -161,6 +161,12 @@ fn update_swaps_the_running_store_copy_and_rewrites_the_shims() {
     );
     let message = stderr(&output);
     assert!(message.contains(&format!("{LOCAL} → 9.9.9")), "{message}");
+    // BUG-08: the version just left is named with the only command that
+    // installs a specific one — the `.old` aside is swept by the next run.
+    assert!(
+        message.contains(&format!("install.ps1 -Version {LOCAL}")),
+        "the way back is named where the version changed: {message}"
+    );
     assert!(
         !message.contains("retrying"),
         "BUG-13's announcement must stay out of a healthy run: {message}"
@@ -219,6 +225,11 @@ fn update_skips_when_already_on_the_latest_release() {
         "{}",
         stderr(&output)
     );
+    assert!(
+        !stderr(&output).contains("install.ps1 -Version"),
+        "on the latest release there is nothing to go back from: {}",
+        stderr(&output)
+    );
     assert_eq!(fs::read(&exe).unwrap(), before, "nothing was touched");
     let route = format!("/download/v{LOCAL}/{}", asset(LOCAL));
     assert_eq!(server.hits(&route), 0, "no zip download");
@@ -227,6 +238,29 @@ fn update_skips_when_already_on_the_latest_release() {
         0,
         "an update that is not happening fetches no signature either"
     );
+}
+
+/// BUG-08: running ABOVE the latest release is the one skip where the user
+/// may well want to move — downwards. Nothing in `jdk update` installs a
+/// named version, so the skip has to say what does.
+#[test]
+fn update_skipped_from_ahead_of_the_latest_names_the_way_back() {
+    let server = Server::start();
+    serve_latest(&server, "0.0.1");
+    let world = World::new(server.url().to_string());
+    let exe = world.place_store_copy();
+    let before = fs::read(&exe).unwrap();
+
+    let output = world.update(&exe, &[]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let message = stderr(&output);
+    assert!(message.contains("already up to date"), "{message}");
+    assert!(
+        message.contains("install.ps1 -Version 0.0.1"),
+        "the latest release is named as the version to install: {message}"
+    );
+    assert_eq!(fs::read(&exe).unwrap(), before, "nothing was touched");
 }
 
 #[test]
