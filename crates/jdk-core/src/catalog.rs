@@ -25,11 +25,14 @@ pub struct Available {
     pub release_status: ReleaseStatus,
 }
 
-/// Where [`Catalog::find`] resolved a package from — surfaced so the CLI can
-/// tell the user when an install came from the live API rather than the index.
+/// Which catalog answered a selector. Nothing else carries this: the package
+/// a live query returns is shaped exactly like an indexed one, and both are
+/// downloaded under the same mandatory sha256 — so a caller that wants to say
+/// where a build came from can only learn it here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
-    /// The static, checksum-verified index.
+    /// The static index, whose sha256 for this package was published ahead of
+    /// time and pinned by `index.json`.
     Index,
     /// The live foojay Disco API, queried because the index could not answer.
     Foojay,
@@ -61,8 +64,7 @@ impl Catalog {
     /// unreachable, unknown vendor, or simply no matching version (the live
     /// API may know a release a day-old index does not) — falls through to
     /// foojay, and a total miss reports both causes. Returns the package with
-    /// its [`Origin`] so the caller can tell the user when it came from the
-    /// live API.
+    /// the [`Origin`] that answered.
     pub fn find(
         &self,
         http: &Http,

@@ -52,6 +52,12 @@ impl World {
             .unwrap()
     }
 
+    /// Points the live fallback somewhere real; the index stays where it was.
+    fn with_foojay(mut self, url: String) -> World {
+        self.foojay_url = url;
+        self
+    }
+
     fn config(&self, text: &str) {
         fs::create_dir_all(&self.root).unwrap();
         fs::write(self.root.join("config.toml"), text).unwrap();
@@ -91,6 +97,85 @@ fn served_package(server: &Server, version: &str) -> jdk_core::index::Package {
     );
     server.route(&route, move |_| Response::ok(zip.clone()));
     pkg
+}
+
+/// A foojay that resolves exactly one build: the listing, the `ids/<id>`
+/// details where the only checksum lives, and the zip. Paired with an index
+/// that carries a DIFFERENT line, so the index answers, misses, and the live
+/// fallback takes over — the real shape of a live resolution, without the
+/// retry backoff an unreachable index would spend first.
+fn serve_foojay(server: &Server, version: &str, release_status: &str) {
+    let zip = fake_jdk_zip(b"stub jdk payload");
+    let listing = format!(
+        r#"{{"result":[{{"id":"abc123","java_version":"{version}","term_of_support":"lts","release_status":"{release_status}","size":{}}}]}}"#,
+        zip.len()
+    );
+    let details = format!(
+        r#"{{"result":[{{"filename":"t.zip","direct_download_uri":"{}/dl/live.zip","checksum":"{}","checksum_type":"sha256"}}]}}"#,
+        server.url(),
+        sha256_hex(&zip)
+    );
+    server.route("/packages", move |_| Response::ok(listing.clone()));
+    server.route("/ids/abc123", move |_| Response::ok(details.clone()));
+    server.route("/dl/live.zip", move |_| Response::ok(zip.clone()));
+}
+
+/// An index that answers for temurin but carries only 17, so any other
+/// selector misses it and falls through to foojay.
+fn serve_index_without(server: &Server) {
+    let other = package(
+        "17.0.9",
+        &format!("{}/dl/17.zip", server.url()),
+        &"a".repeat(64),
+        1,
+    );
+    serve_catalog(server, std::slice::from_ref(&other));
+}
+
+/// DEBT-07: a GA build resolved live says NOTHING. It is the banal case — a
+/// release the index has not picked up yet — and a line about it would land
+/// in the middle of every `java` that auto-installs one in CI.
+#[test]
+fn a_live_ga_resolution_is_silent() {
+    let server = Server::start();
+    serve_index_without(&server);
+    serve_foojay(&server, "21.0.5+11", "ga");
+    let world = World::at(server.url().to_string()).with_foojay(server.url().to_string());
+
+    let output = world.jdk(&["install", "temurin@21"]);
+    let stderr = stderr(&output);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stderr.contains("installed temurin@21.0.5+11"), "{stderr}");
+    assert!(
+        !stderr.contains("resolved live"),
+        "a GA build off the live API must not announce itself: {stderr}"
+    );
+}
+
+/// DEBT-07: an early-access build resolved live DOES say so, because there
+/// the fact is worth having — the index carries no build for that selector at
+/// all. The old message fired for both cases and claimed the download was
+/// "unverified against the index's pinned sha256", which was never true: the
+/// sha256 is mandatory on both paths.
+#[test]
+fn a_live_early_access_resolution_says_so() {
+    let server = Server::start();
+    serve_index_without(&server);
+    serve_foojay(&server, "27-ea+31", "ea");
+    let world = World::at(server.url().to_string()).with_foojay(server.url().to_string());
+
+    let output = world.jdk(&["install", "temurin@27-ea"]);
+    let stderr = stderr(&output);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stderr.contains("installed temurin@27-ea+31"), "{stderr}");
+    assert!(stderr.contains("resolved live from foojay"), "{stderr}");
+    assert!(stderr.contains("no early-access build"), "{stderr}");
+    assert!(
+        !stderr.contains("unverified"),
+        "both paths verify the sha256; the line must not suggest otherwise: {stderr}"
+    );
 }
 
 #[test]

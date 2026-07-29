@@ -10,7 +10,7 @@ use crate::{remote, uninstall};
 use indicatif::{ProgressBar, ProgressStyle};
 use jdk_core::catalog::Origin;
 use jdk_core::current::{self, Current};
-use jdk_core::index::Package;
+use jdk_core::index::{Package, ReleaseStatus};
 use jdk_resolve::selector::Selector;
 use jdk_resolve::version::Version;
 use jdk_resolve::{exit, store};
@@ -28,11 +28,17 @@ pub fn run(root: &Path, selector: &str, from_shim: bool, accept_license: bool) -
         .map_err(Fail::engine)?;
     let name = format!("{}@{}", package.vendor, package.version);
 
-    // A live-API resolution means the index did not carry this build (a fresh
-    // release, or an exact EA build below the line's indexed latest) — say so,
-    // since it is slower and unverified against the index's pinned sha256.
-    if origin == Origin::Foojay {
-        eprintln!("jdk: {name} resolved live from foojay (not in the index)");
+    // Early access off the live API is the one resolution worth a line. A GA
+    // build resolved live is the banal case — a release the index has not
+    // picked up yet — and announcing it would put a stderr line in the middle
+    // of every `java` that installs one in CI. Not a word about verification:
+    // the sha256 is mandatory on BOTH paths, so the difference is which
+    // catalog named the build, never whether the bytes were checked.
+    if origin == Origin::Foojay && package.release_status == ReleaseStatus::Ea {
+        eprintln!(
+            "jdk: {name} resolved live from foojay — the index carries no \
+             early-access build for this selector"
+        );
     }
 
     // Proprietary-vendor terms, shown AND accepted before the binary is
