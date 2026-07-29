@@ -7,7 +7,7 @@
 use jdk_core::Error;
 use jdk_core::cache::Cache;
 use jdk_core::catalog::{Catalog, Origin};
-use jdk_core::download::{MAX_ARCHIVE, fetch_archive, fetch_archive_capped, sha256_hex};
+use jdk_core::download::{MAX_ARCHIVE, fetch_archive, sha256_hex};
 use jdk_core::http::{Http, Retry, UrlPolicy};
 use jdk_core::index::{IndexEntry, IndexFile, ReleaseStatus, current_platform};
 use jdk_core::install::install;
@@ -16,6 +16,7 @@ use jdk_resolve::store;
 use jdk_resolve::version::Version;
 use std::fs;
 use std::io::Write as _;
+use std::net::{IpAddr, Ipv6Addr};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -339,6 +340,7 @@ fn download_resumes_from_a_part_file() {
                     )],
                     body: body[start..].to_vec(),
                     pace: None,
+                    declared_length: None,
                 }
             }
             None => Response::ok(body.clone()),
@@ -782,6 +784,7 @@ fn declared_total_over_the_archive_ceiling_is_rejected_before_reading_any_body()
             )],
             body: vec![0u8; 8],
             pace: None,
+            declared_length: None,
         }
     });
 
@@ -803,37 +806,38 @@ fn declared_total_over_the_archive_ceiling_is_rejected_before_reading_any_body()
     );
 }
 
-/// Same declared-size ceiling as above, but the FRESH (200, no resume) path,
-/// now expressible without transferring gigabytes: `fetch_archive_capped`
-/// takes a small `max_bytes`, and the test server's honest Content-Length
-/// (it always reports the real body size) is already over it.
+/// Same declared-size ceiling, same real `MAX_ARCHIVE`, but the FRESH (200,
+/// no resume) path — where the total comes from Content-Length. The server
+/// announces a size over the ceiling and sends a handful of bytes, so the
+/// refusal costs no transfer at all; lying about the size is the test
+/// server's job (`Response::declaring`), which is what lets the download code
+/// keep its ceiling private.
 ///
 /// A quirk of today's implementation worth calling out precisely: `dest` is
 /// never created, but the `.part` staging file IS opened (`File::create`)
-/// before the declared-size check runs — that ordering is unchanged by this
-/// pass (behavior-preserving refactor only), so an empty `.part` stub can be
-/// left on disk even though the ceiling trips before a single body byte is
-/// read. This test pins the precise, honest guarantee — no DATA byte ever
-/// reaches disk — rather than the stronger "no `.part` file exists at all",
-/// which the current code does not provide on this specific path.
+/// before the declared-size check runs, so an empty `.part` stub can be left
+/// on disk even though the ceiling trips before a single body byte is read.
+/// This test pins the precise, honest guarantee — no DATA byte ever reaches
+/// disk — rather than the stronger "no `.part` file exists at all", which the
+/// current code does not provide on this specific path.
 #[test]
-fn declared_total_over_a_capped_ceiling_on_a_fresh_download_is_rejected_before_reading_any_body() {
+fn declared_total_over_the_archive_ceiling_on_a_fresh_download_is_rejected_before_any_body() {
     let temp = TempDir::new().unwrap();
     let dest = temp.path().join("t.zip");
     let part = temp.path().join("t.zip.part");
-    let cap = 1024u64;
 
     let server = Server::start();
-    let oversized = vec![0xABu8; cap as usize + 200];
-    server.route("/dl/fresh.zip", move |_| Response::ok(oversized.clone()));
+    server.route("/dl/fresh.zip", move |_| {
+        Response::ok(vec![0xABu8; 8]).declaring(MAX_ARCHIVE + 1)
+    });
 
     let pkg = package(
         "21.0.5+11",
         &format!("{}/dl/fresh.zip", server.url()),
         &"a".repeat(64), // never reached: rejected before hashing settles
-        cap + 200,
+        MAX_ARCHIVE + 1,
     );
-    let err = fetch_archive_capped(&http(), &pkg, &dest, None, cap).unwrap_err();
+    let err = fetch_archive(&http(), &pkg, &dest, None).unwrap_err();
 
     assert!(matches!(err, Error::Security(_)), "{err}");
     assert!(err.to_string().contains("ceiling"), "{err}");
@@ -843,78 +847,6 @@ fn declared_total_over_a_capped_ceiling_on_a_fresh_download_is_rejected_before_r
         0,
         "no body byte may reach disk even though an empty .part stub is opened first"
     );
-}
-
-/// The OTHER ceiling: actual streamed bytes over `max_bytes` when the total
-/// is unknown up front (no Content-Length). The pre-check passes trivially
-/// (`total_size` returns 0 when the header is absent), so only the running
-/// byte count inside the copy loop catches it — and unlike the declared-size
-/// branch above, THIS branch explicitly deletes the `.part`.
-///
-/// `test_support::Server` always emits a truthful, computed Content-Length
-/// for every response, so it cannot express "unknown length" — this test
-/// talks to a minimal hand-rolled loopback listener instead, replying with no
-/// Content-Length and relying on `Connection: close` (a real "close-
-/// delimited" HTTP/1.1 message, RFC 9112 §6.3 case 7) to mark the body's end.
-#[test]
-fn streamed_bytes_over_a_capped_ceiling_are_rejected_and_the_part_is_removed() {
-    use std::io::BufRead;
-    use std::net::TcpListener;
-
-    fn serve_without_content_length(listener: TcpListener, body: Vec<u8>) {
-        let (stream, _) = listener.accept().expect("accept one connection");
-        let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone stream"));
-        let mut stream = reader.get_ref().try_clone().expect("clone stream");
-        let mut line = String::new();
-        loop {
-            line.clear();
-            reader.read_line(&mut line).expect("read request line");
-            if line.trim().is_empty() {
-                break;
-            }
-        }
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
-            .expect("write response head");
-        // The client legitimately hangs up once it hits the ceiling, so a
-        // write/flush error on the body is that expected early hangup, not a
-        // server fault — it must not panic (and so must not fail the join).
-        let _ = stream.write_all(&body);
-        let _ = stream.flush();
-    }
-
-    let temp = TempDir::new().unwrap();
-    let dest = temp.path().join("t.zip");
-    let part = temp.path().join("t.zip.part");
-    let cap = 1024u64;
-    let oversized = vec![0xABu8; cap as usize + 200];
-
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-    let addr = listener.local_addr().expect("local addr");
-    let body = oversized.clone();
-    let server = thread::spawn(move || serve_without_content_length(listener, body));
-
-    let pkg = package(
-        "21.0.5+11",
-        &format!("http://{addr}/dl/big.zip"),
-        &"a".repeat(64), // never reached: rejected before hashing settles
-        cap + 200,
-    );
-    let err = fetch_archive_capped(&http(), &pkg, &dest, None, cap).unwrap_err();
-
-    assert!(matches!(err, Error::Security(_)), "{err}");
-    assert!(err.to_string().contains("ceiling"), "{err}");
-    assert!(!dest.exists());
-    assert!(
-        !part.exists(),
-        "the poisoned partial must be deleted, not left truncated on disk"
-    );
-
-    // Surface any panic from the server's required phases (accept/read/head)
-    // as a test failure instead of silent stderr noise on a detached thread.
-    server
-        .join()
-        .expect("server thread panicked before serving the response");
 }
 
 /// The cache's single lock must cover the WHOLE round trip — read, the HTTP
@@ -1262,6 +1194,35 @@ fn latest_reads_the_version_from_the_releases_redirect() {
     let version = release::latest(&http(), &source(server.url())).unwrap();
 
     assert_eq!(version.to_string(), "9.9.9");
+}
+
+/// The version is read off the URL the redirect landed on, so a `Location`
+/// that leaves the release host would have the updater believe in a release
+/// that host never published.
+///
+/// The second server is on `::1` rather than `127.0.0.1`, which is what makes
+/// this a test of the HOST pin and not of anything else: both spellings are
+/// loopback, so the URL policy passes them both and lets the refusal come
+/// from the pin alone. It also has to be an address, not the name
+/// `localhost`, which resolves to `::1` first and costs two seconds failing
+/// there before falling back.
+#[test]
+fn latest_refuses_a_redirect_that_leaves_the_release_host() {
+    let server = Server::start();
+    let elsewhere = Server::start_on(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    elsewhere.route("/tag/v9.9.9", |_| Response::ok("release page html"));
+    let target = format!("{}/tag/v9.9.9", elsewhere.url());
+    server.route("/latest", move |_| Response::redirect(&target));
+
+    let err = release::latest(&http(), &source(server.url())).unwrap_err();
+
+    assert!(matches!(err, Error::Security(_)), "{err}");
+    assert!(err.to_string().contains("::1"), "{err}");
+    assert_eq!(
+        elsewhere.hits("/tag/v9.9.9"),
+        1,
+        "the refusal must be the host pin, not a redirect that never landed"
+    );
 }
 
 #[test]

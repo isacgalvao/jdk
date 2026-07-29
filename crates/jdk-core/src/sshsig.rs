@@ -175,16 +175,48 @@ fn signature_from_blob(blob: &[u8]) -> Result<Signature> {
     Ok(Signature::from_bytes(&bytes))
 }
 
-/// The bytes inside the `-----BEGIN/END SSH SIGNATURE-----` armor. The base64
-/// arrives wrapped at 76 columns, so every whitespace run is dropped before
-/// decoding.
+/// The bytes inside the `-----BEGIN/END SSH SIGNATURE-----` armor. The
+/// STRUCTURE is pinned to what `ssh-keygen -Y sign` writes — the BEGIN line
+/// first with nothing before it, then non-blank base64, then the END line
+/// with nothing but blank lines after it — because accepting shapes the
+/// signer never emits is surface bought for nothing.
+///
+/// The WIDTH is deliberately not checked. `ssh-keygen` wraps at 70 columns
+/// today and this once required it, but the wrap buys no defense (OpenSSH
+/// 10.3p1 verifies an unwrapped body perfectly happily), while getting it
+/// wrong is unrecoverable: an updater only ever trusts the rule it shipped
+/// with, so if some future OpenSSH emitted a different column the releases it
+/// signed would be refused by every jdk already installed, with no way to
+/// reach them. Structure cannot drift like that; a column can.
+///
+/// The leading-junk rule matches `ssh-keygen -Y verify` (it refuses a
+/// preamble too, `sshsig_armor: invalid format`); the trailing-data rule is
+/// narrower than it, which is the safe direction.
 fn dearmor(armored: &str) -> Result<Vec<u8>> {
-    let body = armored
-        .split_once(ARMOR_BEGIN)
-        .and_then(|(_, rest)| rest.split_once(ARMOR_END))
-        .map(|(body, _)| body)
-        .ok_or_else(|| refuse("signature is not wrapped in SSH SIGNATURE armor"))?;
-    let packed: String = body.split_whitespace().collect();
+    let mut lines = armored.lines();
+    if lines.next() != Some(ARMOR_BEGIN) {
+        return Err(refuse(
+            "signature does not open with the SSH SIGNATURE armor",
+        ));
+    }
+    let mut packed = String::new();
+    let mut closed = false;
+    for line in lines.by_ref() {
+        if line == ARMOR_END {
+            closed = true;
+            break;
+        }
+        if line.trim().is_empty() {
+            return Err(refuse("blank line inside the SSH SIGNATURE armor"));
+        }
+        packed.push_str(line);
+    }
+    if !closed {
+        return Err(refuse("signature is not wrapped in SSH SIGNATURE armor"));
+    }
+    if lines.any(|line| !line.trim().is_empty()) {
+        return Err(refuse("trailing data after the SSH SIGNATURE armor"));
+    }
     BASE64
         .decode(&packed)
         .map_err(|err| refuse(format!("signature base64 is invalid: {err}")))
@@ -260,8 +292,14 @@ mod tests {
     /// key" means below. Deliberately NOT the production key: rotating that
     /// one is a find-replace over the pinned value, and it must not reach
     /// into a test whose whole point is that the key is the WRONG one.
-    /// `test_support::sshsig::STRANGER` is the same key, for the tests that
-    /// live outside this crate.
+    ///
+    /// `test_support::sshsig::STRANGER` plays the same part for the tests
+    /// outside this crate. They hold the same bytes today only because they
+    /// were written together, and they do NOT have to: any syntactically
+    /// valid ed25519 key that did not sign the fixture is equally wrong here,
+    /// so regenerating one alone breaks nothing. Two declarations rather than
+    /// an import because this module's tests need nothing else from
+    /// test-support — the fixtures they read are committed next to them.
     const STRANGER: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKWLX33CJQAf9Dobd7asoLeR9l+b5XZAonlRjJHwX2yB not-the-jdk-release-key";
 
     fn signer() -> PublicKey {
@@ -315,6 +353,56 @@ mod tests {
         let corrupt = SIG.replacen("U1NIU0lH", "U1NIU0l!", 1);
         let err = verify(&corrupt, SUMS.as_bytes(), &signer(), NAMESPACE).unwrap_err();
         assert!(err.to_string().contains("base64"), "{err}");
+    }
+
+    /// The armor's STRUCTURE is pinned; its width is not. Neither refusal
+    /// below could have forged anything — the signature underneath still had
+    /// to verify — but each is a shape `ssh-keygen -Y sign` never writes.
+    #[test]
+    fn refuses_armor_ssh_keygen_would_not_write() {
+        let refusal = |armored: &str| {
+            verify(armored, SUMS.as_bytes(), &signer(), NAMESPACE)
+                .unwrap_err()
+                .to_string()
+        };
+
+        // Anything at all before the BEGIN line, including a plausible-looking
+        // preamble around a signature that does verify. `ssh-keygen -Y verify`
+        // refuses this one too.
+        assert!(refusal(&format!("gpg noise\n{SIG}")).contains("armor"));
+        assert!(refusal(&format!("  {SIG}")).contains("armor"));
+
+        // Payload after the closing line.
+        assert!(refusal(&format!("{SIG}and one more thing\n")).contains("trailing"));
+
+        // A blank line in the middle of the body.
+        let gapped = SIG.replacen('\n', "\n\n", 2);
+        assert!(refusal(&gapped).contains("blank line"), "{gapped}");
+
+        // The fixture itself, untouched, still verifies.
+        verify(SIG, SUMS.as_bytes(), &signer(), NAMESPACE).unwrap();
+    }
+
+    /// The width is NOT part of the rule: the same signature with its base64
+    /// on one line verifies exactly as the wrapped fixture does. Pinning a
+    /// column would be a rule installed clients could never be talked out of
+    /// if OpenSSH ever changed the one it emits at.
+    #[test]
+    fn accepts_the_same_signature_at_any_wrap_width() {
+        let packed: String = SIG
+            .lines()
+            .filter(|line| *line != ARMOR_BEGIN && *line != ARMOR_END)
+            .collect();
+        for width in [1, 4, 64, 70, packed.len()] {
+            let mut armored = format!("{ARMOR_BEGIN}\n");
+            for chunk in packed.as_bytes().chunks(width) {
+                armored.push_str(std::str::from_utf8(chunk).expect("base64 is ascii"));
+                armored.push('\n');
+            }
+            armored.push_str(ARMOR_END);
+            verify(&armored, SUMS.as_bytes(), &signer(), NAMESPACE)
+                .unwrap_or_else(|err| panic!("width {width}: {err}"));
+        }
     }
 
     /// Every refusal is a security refusal, never an `Http` or a parse error
@@ -402,7 +490,19 @@ mod tests {
             .position(|window| window == needle)
     }
 
+    /// Re-wraps a doctored blob the way `ssh-keygen` would have written it.
+    /// The 70 is cosmetic — [`dearmor`] takes any width — but wrapping keeps
+    /// an empty blob from producing a blank body line, which is a different
+    /// refusal than the truncation these fixtures are built to exercise.
     fn rearmor(blob: &[u8]) -> String {
-        format!("{ARMOR_BEGIN}\n{}\n{ARMOR_END}\n", BASE64.encode(blob))
+        let encoded = BASE64.encode(blob);
+        let mut armored = format!("{ARMOR_BEGIN}\n");
+        for line in encoded.as_bytes().chunks(70) {
+            armored.push_str(std::str::from_utf8(line).expect("base64 is ascii"));
+            armored.push('\n');
+        }
+        armored.push_str(ARMOR_END);
+        armored.push('\n');
+        armored
     }
 }

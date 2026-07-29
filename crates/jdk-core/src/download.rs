@@ -33,14 +33,15 @@ pub fn fetch_archive(
     fetch_archive_capped(http, package, dest, progress, MAX_ARCHIVE)
 }
 
-/// `fetch_archive` with the archive-size ceiling injected. Exists only so the
-/// integration tests (a separate crate, blind to `pub(crate)`) can pin the
-/// ceiling checks with a small `max_bytes` instead of transferring gigabytes —
-/// every production caller goes through [`fetch_archive`], which passes
-/// [`MAX_ARCHIVE`]. Hidden from the public docs to signal it is not a general
-/// entry point.
-#[doc(hidden)]
-pub fn fetch_archive_capped(
+/// `fetch_archive` with the archive-size ceiling injected. PRIVATE, and that
+/// is the point: [`fetch_archive`] is the only way into this code from
+/// outside, so [`MAX_ARCHIVE`] is an invariant of the crate rather than a
+/// convention every caller has to keep. The parameter survives for the one
+/// ceiling this file's own tests cannot reach any other way — the running
+/// byte count on a body of unknown length, which at 4 GiB is not a test
+/// anyone can run. The declared-size ceiling needs no seam: a server that
+/// lies about Content-Length pins it through [`fetch_archive`] itself.
+fn fetch_archive_capped(
     http: &Http,
     package: &Package,
     dest: &Path,
@@ -479,5 +480,100 @@ mod tests {
             part_path(Path::new("C:\\x\\temurin@21.zip")),
             Path::new("C:\\x\\temurin@21.zip.part")
         );
+    }
+
+    /// The ceiling that only the running byte count can catch: a body of
+    /// unknown length (no Content-Length, so `total_size` returns 0 and the
+    /// declared-size pre-check passes trivially) that outgrows `max_bytes`
+    /// mid-stream. Unlike the declared-size branch — pinned end to end
+    /// against the real `MAX_ARCHIVE` in `hermetic.rs` — this one cannot be
+    /// reached without actually transferring past the ceiling, so it is
+    /// tested HERE, where `fetch_archive_capped` is in scope and the ceiling
+    /// can be 1 KiB. THIS branch, and only this one, deletes the `.part`.
+    ///
+    /// The listener is hand-rolled because a server that reports no length
+    /// at all is not something `test_support::Server` can express: it ends
+    /// the body with `Connection: close` instead (a real close-delimited
+    /// HTTP/1.1 message, RFC 9112 §6.3 case 7).
+    #[test]
+    fn streamed_bytes_over_the_ceiling_are_rejected_and_the_part_is_removed() {
+        use crate::http::{Http, Retry, UrlPolicy};
+        use crate::index::ReleaseStatus;
+        use std::io::BufRead;
+        use std::net::TcpListener;
+        use std::thread;
+        use std::time::Duration;
+
+        fn serve_without_content_length(listener: TcpListener, body: Vec<u8>) {
+            let (stream, _) = listener.accept().expect("accept one connection");
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut stream = reader.get_ref().try_clone().expect("clone stream");
+            let mut line = String::new();
+            loop {
+                line.clear();
+                reader.read_line(&mut line).expect("read request line");
+                if line.trim().is_empty() {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                .expect("write response head");
+            // The client legitimately hangs up once it hits the ceiling, so a
+            // write/flush error on the body is that expected early hangup,
+            // not a server fault — it must not panic (and so must not fail
+            // the join).
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        }
+
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("t.zip");
+        let part = temp.path().join("t.zip.part");
+        let cap = 1024u64;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let server = thread::spawn(move || {
+            serve_without_content_length(listener, vec![0xABu8; cap as usize + 200])
+        });
+
+        let (os, arch) = crate::index::current_platform();
+        let package = Package {
+            tool: "java".to_string(),
+            vendor: "temurin".to_string(),
+            version: "21.0.5+11".to_string(),
+            os: os.to_string(),
+            arch: arch.to_string(),
+            release_status: ReleaseStatus::Ga,
+            lts: true,
+            size: cap + 200,
+            sha256: "a".repeat(64), // never reached: rejected before hashing settles
+            url: format!("http://{addr}/dl/big.zip"),
+        };
+        let http = Http::with_retry(
+            UrlPolicy::AllowInsecureLoopback,
+            Retry {
+                attempts: 1,
+                base_delay: Duration::from_millis(1),
+            },
+        )
+        .expect("build http client");
+        let err = fetch_archive_capped(&http, &package, &dest, None, cap).unwrap_err();
+
+        assert!(matches!(err, Error::Security(_)), "{err}");
+        assert!(err.to_string().contains("ceiling"), "{err}");
+        assert!(!dest.exists());
+        assert!(
+            !part.exists(),
+            "the poisoned partial must be deleted, not left truncated on disk"
+        );
+
+        // Surface any panic from the server's required phases (accept/read/
+        // head) as a test failure instead of silent stderr noise on a
+        // detached thread.
+        server
+            .join()
+            .expect("server thread panicked before serving the response");
     }
 }

@@ -139,6 +139,15 @@ impl Source {
 
 /// The newest released version, read from where the `{base}/latest` redirect
 /// lands; the response body is discarded.
+///
+/// The redirect must land back on the source's own host. This is the one
+/// place a `Location` header gets to decide what the updater believes, and
+/// the policy alone would not stop it: an https hop to any host passes
+/// [`UrlPolicy::Strict`], and the version would then be read off a URL
+/// nobody vouched for. Deliberately NOT applied to the asset downloads in
+/// [`fetch_bundle`] — GitHub redirects those to its object storage as a
+/// matter of course, and what vouches for those bytes is the signed
+/// `SHA256SUMS`, not the hostname they arrived from.
 pub fn latest(http: &Http, source: &Source) -> Result<Version> {
     source.check()?;
     let base = &source.base;
@@ -148,6 +157,13 @@ pub fn latest(http: &Http, source: &Source) -> Result<Version> {
     if status != 200 {
         return Err(Error::Http(format!(
             "release check at {url} returned {status}"
+        )));
+    }
+    let landed = url_host(reply.url());
+    if landed != url_host(base) {
+        return Err(Error::Security(format!(
+            "release check at {url} was redirected to {landed}; refusing to read a \
+             version from a host that does not publish this project's releases"
         )));
     }
     tag_version(reply.url()).ok_or_else(|| {

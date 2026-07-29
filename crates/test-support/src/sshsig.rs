@@ -34,7 +34,8 @@ const ARMOR_WIDTH: usize = 70;
 /// that one is a find-replace over the pinned value, and it must not reach
 /// into tests whose whole point is that the key is the WRONG one. Only the
 /// public half exists, here and in `jdk_core::sshsig`'s own tests; nothing
-/// can sign with it.
+/// can sign with it. The two declarations need not match — each only has to
+/// be a valid ed25519 key that signed nothing.
 pub const STRANGER: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKWLX33CJQAf9Dobd7asoLeR9l+b5XZAonlRjJHwX2yB not-the-jdk-release-key";
 
 /// The signer's OpenSSH public-key line — what a test pins as the key to

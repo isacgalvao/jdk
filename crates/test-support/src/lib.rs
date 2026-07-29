@@ -1,6 +1,7 @@
 //! Hermetic test support: a hand-rolled loopback HTTP server (full control
-//! over ETag/304, Range/206, redirect chains and failure sequences, one
-//! request per connection via `Connection: close` — no extra dev-dependency),
+//! over ETag/304, Range/206, redirect chains, failure sequences and the size
+//! a response claims to be, one request per connection via
+//! `Connection: close` — no extra dev-dependency),
 //! fake-JDK zip and catalog fixtures, an SSHSIG signer for release fixtures,
 //! and on-demand builds of the workspace binaries.
 
@@ -15,7 +16,7 @@ use jdk_core::index::{
 };
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -50,6 +51,11 @@ pub struct Response {
     /// `(chunk_size, delay)`: body written in paced chunks, simulating a
     /// slow link (timeout-semantics tests).
     pub pace: Option<(usize, Duration)>,
+    /// Content-Length to announce instead of the real body length. The one
+    /// way to serve a lie about size — which is why it lives here, in a crate
+    /// that is never published, rather than as a size seam in the download
+    /// code every release ships.
+    pub declared_length: Option<u64>,
 }
 
 impl Response {
@@ -59,6 +65,7 @@ impl Response {
             headers: Vec::new(),
             body: body.into(),
             pace: None,
+            declared_length: None,
         }
     }
 
@@ -68,6 +75,7 @@ impl Response {
             headers: Vec::new(),
             body: Vec::new(),
             pace: None,
+            declared_length: None,
         }
     }
 
@@ -84,6 +92,14 @@ impl Response {
         self.pace = Some((chunk_size, delay));
         self
     }
+
+    /// Announces `length` as the Content-Length while still sending only the
+    /// real body — how a test serves a size the client must refuse without
+    /// anyone transferring it.
+    pub fn declaring(mut self, length: u64) -> Self {
+        self.declared_length = Some(length);
+        self
+    }
 }
 
 type Handler = dyn Fn(&Request) -> Response + Send + Sync;
@@ -98,7 +114,16 @@ pub struct Server {
 
 impl Server {
     pub fn start() -> Server {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        Server::start_on(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    }
+
+    /// A server on a specific loopback address. `127.0.0.1` and `::1` are the
+    /// only two spellings the URL policy treats as loopback while `url_host`
+    /// tells them apart, so this is the one way to get two test servers whose
+    /// HOSTS differ rather than only their ports — what a host-pinning rule
+    /// has to be tested against.
+    pub fn start_on(host: IpAddr) -> Server {
+        let listener = TcpListener::bind((host, 0)).expect("bind loopback");
         let url = format!("http://{}", listener.local_addr().expect("local addr"));
         let routes: Arc<Mutex<HashMap<String, Arc<Handler>>>> = Arc::default();
         let requests: Arc<Mutex<Vec<Request>>> = Arc::default();
@@ -208,7 +233,10 @@ fn serve(
     head.push_str("Connection: close\r\n");
     let has_body = response.status != 304;
     if has_body {
-        head.push_str(&format!("Content-Length: {}\r\n", response.body.len()));
+        let length = response
+            .declared_length
+            .unwrap_or(response.body.len() as u64);
+        head.push_str(&format!("Content-Length: {length}\r\n"));
     }
     head.push_str("\r\n");
     stream.write_all(head.as_bytes())?;
