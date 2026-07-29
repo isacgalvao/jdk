@@ -42,7 +42,7 @@ test-support = { path = "crates/test-support" }
 # anywhere) and the precomputed tables of `fast`, which buy nothing for a
 # binary that verifies one signature per update.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
-base64 = "0.22"
+base64 = "0.23"
 
 # The index contract's serialization, shared by the client that reads it, the
 # generator that writes it and the fixtures that stand in for it.
