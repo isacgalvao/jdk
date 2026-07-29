@@ -39,6 +39,13 @@ jobs:
           Write-Host "jdk-shim.exe: $($shim.Length) bytes"
           if ($shim.Length -ge 1MB) { throw "jdk-shim.exe is $($shim.Length) bytes, gate is < 1 MiB" }
 
+      # install.ps1 is the other half of the release anchor and no cargo test
+      # can reach it. Hermetic: a loopback server, a throwaway signing key, and
+      # nothing installed — see the script's header.
+      - name: install.ps1 checksum anchor
+        shell: pwsh
+        run: ./.github/scripts/test_install_anchor.ps1
+
   # rust-version is a promise to whoever runs `cargo install jdk` on an older
   # toolchain, and nothing else in the pipeline keeps it: rust-toolchain.toml
   # pins a much newer channel and is the only rustc anything ever builds with.

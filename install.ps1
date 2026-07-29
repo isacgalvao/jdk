@@ -40,6 +40,11 @@ from -Sha256.
 Expected SHA-256 of the -ZipPath zip (hex, case-insensitive). Overrides the
 `<zip>.sha256` sidecar file.
 
+.PARAMETER DefineOnly
+Hermetic override: define the functions and constants, then return without
+downloading or changing anything. Exists so `.github/scripts/test_install_anchor.ps1`
+can dot-source this file and drive Get-SignedHash against a loopback server.
+
 .EXAMPLE
 irm https://github.com/isacgalvao/jdk/releases/latest/download/install.ps1 | iex
 #>
@@ -47,7 +52,8 @@ irm https://github.com/isacgalvao/jdk/releases/latest/download/install.ps1 | iex
 param(
     [string]$Version,
     [string]$ZipPath,
-    [string]$Sha256
+    [string]$Sha256,
+    [switch]$DefineOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -153,7 +159,10 @@ function Get-SignedHash([string]$AssetBase, [string]$Name, [string]$WorkDir) {
     } catch {
         $status = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
         if ($status -eq 404) {
-            throw "This release publishes SHA256SUMS but no SHA256SUMS.sig - the signature was stripped. Aborting."
+            # No next step pointing at -ZipPath: that switch is exactly the way
+            # around this check, and handing it to someone who just met a
+            # stripped signature would be handing them the bypass.
+            throw "This release publishes SHA256SUMS but no SHA256SUMS.sig - the signature was stripped. Aborting. Check the release page for SHA256SUMS.sig: if it is listed there, these files did not come from it; if it is not, the release is incomplete - report it and try again later."
         }
         throw
     }
@@ -192,15 +201,24 @@ function Get-SignedHash([string]$AssetBase, [string]$Name, [string]$WorkDir) {
     Write-Host "Signature OK (SHA256SUMS signed by $signingPrincipal)"
 
     # `<hash>  <name>`; the name must be this asset exactly, so a line for
-    # another release's zip can never answer for this one.
+    # another release's zip can never answer for this one. -ceq and not -eq:
+    # PowerShell compares case-insensitively by default, while the updater's
+    # `sum_for` (jdk-core/src/release.rs) is exact — two anchors over the same
+    # file disagreeing about which line covers an asset is not a difference
+    # either of them should have.
     foreach ($line in Get-Content $sums) {
         $fields = $line.Trim() -split '\s+'
-        if ($fields.Count -eq 2 -and $fields[1] -eq $Name) {
+        if ($fields.Count -eq 2 -and $fields[1] -ceq $Name) {
             return $fields[0].ToLowerInvariant()
         }
     }
     throw "The signed SHA256SUMS of this release does not cover $Name. Aborting: the download cannot be tied to the release that was signed."
 }
+
+# Everything above is definitions; everything below installs. Dot-sourcing
+# with -DefineOnly stops here, which is what lets the anchor test drive
+# Get-SignedHash without this script touching the network or this machine.
+if ($DefineOnly) { return }
 
 # GitHub releases require TLS 1.2, which 5.1-era defaults may not enable.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -244,8 +262,13 @@ try {
             }
             throw
         }
-        Invoke-WebRequest -UseBasicParsing -Uri "$assetBase/$zipName.sha256" -OutFile "$zip.sha256"
         $signedHash = Get-SignedHash $assetBase $zipName $downloadDir
+        if (-not $signedHash) {
+            # Only now: with a signed hash in hand the per-file sidecar is a
+            # download nobody reads, and it is served by the same host as the
+            # zip anyway - it proves the transfer, never the release.
+            Invoke-WebRequest -UseBasicParsing -Uri "$assetBase/$zipName.sha256" -OutFile "$zip.sha256"
+        }
     }
 
     Assert-Checksum $zip $signedHash
