@@ -1,10 +1,17 @@
 # Builds and publishes a jdk release. A tag push (`v*`) runs the full CI gates
-# at the tagged commit, signs the artifacts (keyless cosign over SHA256SUMS plus
-# SLSA build-provenance attestations), publishes a GitHub release and then the
-# crates.io crates (jdk-resolve, jdk-core, jdk, in dependency order — needs the
-# CARGO_REGISTRY_TOKEN secret); a manual run is a dry-run that runs the same
-# gates and uploads the same artifacts as workflow artifacts (unsigned), so the
-# pipeline can be exercised without cutting a release.
+# at the tagged commit, signs the artifacts (an SSHSIG over SHA256SUMS with the
+# key `jdk update` has pinned, plus SLSA build-provenance attestations),
+# publishes a GitHub release and then the crates.io crates (jdk-resolve,
+# jdk-core, jdk, in dependency order — needs the CARGO_REGISTRY_TOKEN secret); a
+# manual run is a dry-run that runs the same gates and uploads the same
+# artifacts as workflow artifacts (unsigned), so the pipeline can be exercised
+# without cutting a release.
+#
+# Two signatures, two questions, no overlap (CI-11): the SSHSIG answers "is this
+# the release the maintainer cut", which a client can check offline against a
+# compiled-in key, and the attestations answer "was it built here, from this
+# source". SHA256SUMS is what the first one covers, and every asset's hash is in
+# it.
 #
 # Everything runs on Windows: the shim, the Defender scan and the zips are all
 # Windows-native. aarch64 is best-effort (continue-on-error) and never blocks
@@ -48,8 +55,10 @@ jobs:
     runs-on: windows-2025
     permissions:
       contents: write
-      # Keyless cosign signing and build-provenance attestation both mint their
-      # identity from the job's OIDC token.
+      # The build-provenance attestation mints its identity from the job's OIDC
+      # token. The SSHSIG over SHA256SUMS does not: it uses a long-lived key
+      # from a secret, because the client that verifies it has to be able to do
+      # so with nothing but a key compiled into itself.
       id-token: write
       attestations: write
     defaults:
@@ -156,8 +165,9 @@ jobs:
           Copy-Item install.ps1 $dist
 
           $artifacts = Get-ChildItem $dist -File | Where-Object { $_.Extension -ne '.sha256' }
-          # Per-file sidecar (what install.ps1 reads) plus one aggregate
-          # SHA256SUMS (what cosign signs and `sha256sum -c` verifies).
+          # Per-file sidecar (install.ps1's fallback when ssh-keygen is absent)
+          # plus one aggregate SHA256SUMS — the file the signature below covers,
+          # and the only thing `jdk update` trusts.
           $sums = foreach ($f in $artifacts) {
             $hash = (Get-FileHash -Algorithm SHA256 -Path $f.FullName).Hash.ToLowerInvariant()
             [IO.File]::WriteAllText("$($f.FullName).sha256", "$hash  $($f.Name)`n")
@@ -178,16 +188,36 @@ jobs:
           $filePath = (Resolve-Path -Path "dist").Path
           & $defenderPath -Scan -ScanType 3 -File $filePath -DisableRemediation
 
-      # Keyless: cosign signs SHA256SUMS with the job's OIDC identity, no
-      # long-lived key. The .sigstore.json bundle ships with the release and
-      # verifies with `cosign verify-blob`.
-      - name: install cosign
+      # The anchor `jdk update` verifies. `ssh-keygen` is preinstalled on
+      # windows-2025, and ed25519 signing is deterministic, so this is ~10
+      # lines and no extra action in the supply chain. Both artifacts are
+      # mandatory from 0.6.0 on: an updater that meets a release without
+      # SHA256SUMS.sig refuses it rather than falling back.
+      - name: sign SHA256SUMS (SSHSIG, namespace jdk-release)
         if: github.event_name == 'push' && github.ref_type == 'tag'
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
-
-      - name: sign SHA256SUMS (keyless)
-        if: github.event_name == 'push' && github.ref_type == 'tag'
-        run: cosign sign-blob --yes dist/SHA256SUMS --bundle dist/SHA256SUMS.sigstore.json
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          $key = Join-Path $env:RUNNER_TEMP 'jdk-release-signing-key'
+          try {
+            # WriteAllText and not Set-Content or `>`: OpenSSH rejects a key
+            # file that picked up CRLF or a BOM on the way to disk, and it
+            # wants the final newline the secret may not carry.
+            $pem = $env:RELEASE_SIGNING_KEY
+            if (-not $pem.EndsWith("`n")) { $pem += "`n" }
+            [IO.File]::WriteAllText($key, $pem)
+            # ssh-keygen refuses a private key other accounts can read.
+            icacls $key /inheritance:r /grant:r "$(whoami):(R)" | Out-Null
+            ssh-keygen -Y sign -f $key -n jdk-release dist/SHA256SUMS
+          } finally {
+            # Off the disk before anything else runs in this job, whatever
+            # happened above.
+            Remove-Item $key -Force -ErrorAction SilentlyContinue
+          }
+          if (-not (Test-Path dist/SHA256SUMS.sig)) {
+            throw "ssh-keygen wrote no dist/SHA256SUMS.sig - the release would ship unverifiable"
+          }
+          Write-Host "signed dist/SHA256SUMS ($((Get-Item dist/SHA256SUMS.sig).Length) bytes)"
 
       # SLSA build provenance for the release zips, verifiable with
       # `gh attestation verify <zip> --repo isacgalvao/jdk`.
@@ -232,16 +262,17 @@ jobs:
           **Install (PowerShell)**
 
           ${fence}powershell
-          irm https://raw.githubusercontent.com/isacgalvao/jdk/master/install.ps1 | iex
+          irm https://github.com/isacgalvao/jdk/releases/latest/download/install.ps1 | iex
           $fence
 
           **Verify (optional)**
 
           ${fence}bash
-          # signature over the checksums (keyless, Sigstore)
-          cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity-regexp '^https://github.com/isacgalvao/jdk/.github/workflows/release.yml@'
+          # the signature jdk update itself checks, over the checksums of every asset
+          echo 'release@jdk namespaces="jdk-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKufZs1YJGeiBZsIVZSpxMIR/1hmAu1/biqqKJzgDxu7' > allowed_signers
+          ssh-keygen -Y verify -f allowed_signers -I release@jdk -n jdk-release \
+            -s SHA256SUMS.sig < SHA256SUMS
+          sha256sum -c --ignore-missing SHA256SUMS
           # build provenance for a downloaded zip
           gh attestation verify jdk-v$version-windows-x64.zip --repo isacgalvao/jdk
           $fence
