@@ -1,0 +1,35 @@
+# Template: render.ps1 fills the __PLACEHOLDER__ values and drops these lines.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: isacgalvao.jdk
+PackageVersion: __VERSION__
+ReleaseDate: __RELEASE_DATE__
+
+# The release zip is the payload, and winget extracts ALL of it into the
+# package directory - jdk.exe, jdk-shim.exe, LICENSE and README.md alike - so
+# `jdk setup` finds the jdk-shim.exe it materializes the shims from sitting
+# next to the jdk.exe it runs. NestedInstallerFiles is not that list: it is
+# the set of files that also get a symlink in the Links directory on PATH,
+# named by PortableCommandAlias or, when there is none, by the file name
+# (winget-cli, Workflows/PortableFlow.cpp - one loop over the extracted
+# directory, a second over this list). jdk-shim.exe is a template setup
+# copies, never a command, so listing it here would only put a stray
+# jdk-shim on the user's PATH.
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: jdk.exe
+    PortableCommandAlias: jdk
+Commands:
+  - jdk
+
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/isacgalvao/jdk/releases/download/v__VERSION__/jdk-v__VERSION__-windows-x64.zip
+    InstallerSha256: __SHA256_X64__
+  - Architecture: arm64
+    InstallerUrl: https://github.com/isacgalvao/jdk/releases/download/v__VERSION__/jdk-v__VERSION__-windows-arm64.zip
+    InstallerSha256: __SHA256_ARM64__
+
+ManifestType: installer
+ManifestVersion: 1.12.0

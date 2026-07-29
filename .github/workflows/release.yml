@@ -7,7 +7,7 @@
 # gates and uploads the same artifacts as workflow artifacts (unsigned), so the
 # pipeline can be exercised without cutting a release.
 #
-# Four jobs, and the split between the middle two is the point (CI-12): `build`
+# Five jobs, and the split between the middle two is the point (CI-12): `build`
 # runs cargo — meaning it runs every build script in the dependency tree — and
 # holds nothing but read access, while `release` holds the OIDC token that mints
 # provenance and the write access that publishes, and runs no build at all. It
@@ -18,6 +18,14 @@
 # and it holds the crates.io token while doing so. That one is not separable:
 # the token has to be present for the upload the build precedes. What stands in
 # for the split there is `environment: release`, which is why it is declared.
+#
+# `winget` opens the pull request that carries the new version to the Windows
+# Package Manager Community Repository. It is a sibling of `publish-crates`,
+# not a successor: neither can invalidate the other, and a winget-pkgs outage
+# has no business holding up crates.io. It runs with no repository permissions
+# at all — everything it reads is public — and skips itself when the token it
+# would submit with is absent, which is also the state before the package has
+# been submitted by hand for the first time.
 #
 # Two signatures, two questions, no overlap (CI-11): the SSHSIG answers "is this
 # the release the maintainer cut", which a client can check offline against a
@@ -148,13 +156,18 @@ jobs:
       # Each zip carries jdk.exe, jdk-shim.exe side by side (what `jdk setup`
       # needs) plus LICENSE and README.md. A `<file>.sha256` sidecar
       # (`<hash>  <name>`, lowercase — what install.ps1 reads) accompanies every
-      # artifact, install.ps1 included.
+      # artifact, install.ps1 and the scoop manifest included.
       - name: assemble release artifacts
         env:
           # Through the environment, not interpolated into the script text:
           # a `${{ }}` expansion is pasted in before pwsh parses the line, so
           # its content would be code rather than data.
           VERSION: ${{ steps.meta.outputs.version }}
+          # Read-only, and scoped to this step rather than the job: the cargo
+          # steps above run every build script in the dependency tree and none
+          # of them shares an environment with this. It buys one API call, to
+          # compare this release's architectures against the last one's.
+          GH_TOKEN: ${{ github.token }}
         run: |
           $version = $env:VERSION
           $dist = Join-Path $PWD 'dist'
@@ -178,17 +191,57 @@ jobs:
           New-Bundle 'x64'   'target/release/jdk.exe'                          'target/release-shim/jdk-shim.exe'
           New-Bundle 'arm64' 'target/aarch64-pc-windows-msvc/release/jdk.exe'  'target/aarch64-pc-windows-msvc/release-shim/jdk-shim.exe'
 
+          # An arm64 zip the previous release had and this one does not shrinks
+          # the supported matrix under people already running arm64. A warning
+          # and not a throw: whether a missing aarch64 build should stop a
+          # release is UX-12's question, and deciding it here would decide it by
+          # accident. `latest` is the PREVIOUS release only on a tag's first
+          # run - re-run this workflow once the release exists and the
+          # comparison is against itself.
+          if (-not (Test-Path (Join-Path $dist "jdk-v$version-windows-arm64.zip"))) {
+            try {
+              $previous = Invoke-RestMethod -UseBasicParsing -Headers @{
+                Authorization = "Bearer $env:GH_TOKEN"
+                'User-Agent'  = 'jdk-release'
+              } -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/latest"
+              if ($previous.assets.name -match 'windows-arm64\.zip$') {
+                Write-Host "::warning::$($previous.tag_name) shipped an arm64 zip and this build did not - the supported matrix just shrank under everyone already on arm64. Windows 11 on ARM64 falls back to the x64 build under emulation; Windows 10 on ARM64 has no such fallback, and scoop removes the installed version before it validates the new one, with no rollback. Nothing downstream is waiting on this warning - cancel the run now if the missing arm64 build was not intended, because the next job publishes."
+              }
+            } catch {
+              # Never fatal. This step exists to describe the release, not to
+              # gate it on the availability of an API.
+              Write-Host "::notice::could not read the previous release to compare architectures: $($_.Exception.Message)"
+            }
+          }
+
           Copy-Item install.ps1 $dist
 
-          $artifacts = Get-ChildItem $dist -File | Where-Object { $_.Extension -ne '.sha256' }
           # Per-file sidecar (install.ps1's fallback when ssh-keygen is absent)
           # plus one aggregate SHA256SUMS — the file the release job signs, and
           # the only thing `jdk update` trusts.
-          $sums = foreach ($f in $artifacts) {
-            $hash = (Get-FileHash -Algorithm SHA256 -Path $f.FullName).Hash.ToLowerInvariant()
-            [IO.File]::WriteAllText("$($f.FullName).sha256", "$hash  $($f.Name)`n")
-            "$hash  $($f.Name)"
+          $hashes = [ordered]@{}
+          function Add-Sidecar([IO.FileInfo]$File) {
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $File.FullName).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText("$($File.FullName).sha256", "$hash  $($File.Name)`n")
+            $hashes[$File.Name] = $hash
           }
+          $artifacts = Get-ChildItem $dist -File | Where-Object { $_.Extension -ne '.sha256' }
+          foreach ($f in $artifacts) { Add-Sidecar $f }
+
+          # The scoop manifest quotes the zips' hashes, so it is written once
+          # they are known and hashed in its turn: it ships as an asset of the
+          # release it describes, which is what makes `scoop install
+          # <latest/download/jdk.json>` and `scoop update` work with no bucket
+          # to maintain, and SHA256SUMS covers it like everything else. An
+          # absent arm64 zip leaves $null here, and the renderer drops that
+          # architecture rather than quoting a hash for a file nobody built.
+          $scoop = Join-Path $dist 'jdk.json'
+          ./packaging/scoop/render.ps1 -Version $version -OutFile $scoop `
+            -X64Sha256 $hashes["jdk-v$version-windows-x64.zip"] `
+            -Arm64Sha256 $hashes["jdk-v$version-windows-arm64.zip"]
+          Add-Sidecar (Get-Item $scoop)
+
+          $sums = $hashes.Keys | Sort-Object | ForEach-Object { "$($hashes[$_])  $_" }
           [IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS'), ($sums -join "`n") + "`n")
           Get-ChildItem $dist -File | Select-Object Name, Length | Format-Table -AutoSize
 
@@ -382,3 +435,100 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --locked -p jdk-resolve -p jdk-core -p jdk
+
+  # Opens the winget-pkgs pull request for this version. komac is invoked
+  # directly rather than through the `winget-releaser` action, which is a
+  # wrapper around this same komac call: pinning that action by SHA — the rule
+  # everywhere else in this file — would still leave `cargo-bins/cargo-binstall@main`
+  # running inside it at whatever `main` holds that day, in the one job that
+  # holds a classic PAT with write access to every public repository this
+  # account owns, this one included. A pinned version and a checked hash is
+  # the smaller surface and the honest reading of the same rule.
+  #
+  # A package's FIRST version cannot be submitted this way: `komac update`
+  # copies the metadata from the version already in winget-pkgs, so there has
+  # to be one. That step is in RELEASING.md, and packaging/winget/ holds the
+  # manifest it submits.
+  winget:
+    needs: [build, release]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    # The release is already published and signed by the time this runs, and
+    # winget-pkgs is a repository nobody here controls. A submission that
+    # cannot be made — a missing architecture, a moderation queue, an outage —
+    # is a red annotation on a green release, not a failed release.
+    continue-on-error: true
+    runs-on: windows-2025
+    # Nothing here reads this repository through the API — release assets are
+    # public files — so the job asks for nothing and the only credential in
+    # scope is the PAT below.
+    permissions: {}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # `secrets` cannot be read from a job-level `if`, so the skip is a step
+      # that reports what it found. Missing is an ordinary state — every fork
+      # sits there, and so does this repository until the package exists in
+      # winget-pkgs — which is why it is a notice and not a failure.
+      - name: is there a token to submit with
+        id: token
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          $present = -not [string]::IsNullOrWhiteSpace($env:WINGET_TOKEN)
+          if (-not $present) {
+            Write-Host "::notice::WINGET_TOKEN is unset, so nothing was submitted to winget-pkgs. RELEASING.md has the one-time manual submission that comes first, and how to create the secret after it."
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "present=$($present.ToString().ToLowerInvariant())"
+
+      - name: submit to winget-pkgs
+        if: steps.token.outputs.present == 'true'
+        env:
+          # komac takes the fork owner and its credential from the environment.
+          # The PAT is a classic one scoped `public_repo`: a fine-grained token
+          # cannot open a pull request against a repository this account
+          # neither owns nor belongs to.
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          KOMAC_FORK_OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $komacVersion = '2.16.0'
+          $komacSha256 = 'bdc45baf028f750da7519cc8a5f2eab5dfef46dfe88650eeb0d0a9bf51446e4f'
+          $komac = Join-Path $env:RUNNER_TEMP 'komac.exe'
+          Invoke-WebRequest -UseBasicParsing -OutFile $komac `
+            -Uri "https://github.com/russellbanks/Komac/releases/download/v$komacVersion/komac-$komacVersion-x86_64-pc-windows-msvc.exe"
+          $actual = (Get-FileHash -Algorithm SHA256 -Path $komac).Hash.ToLowerInvariant()
+          if ($actual -ne $komacSha256) {
+            throw "komac $komacVersion hashes $actual, expected $komacSha256 - refusing to run it with the submission token in scope"
+          }
+
+          # komac maps the URLs it is handed onto the architectures the manifest
+          # already in winget-pkgs declares. One URL for a two-architecture
+          # package does not yield a one-architecture manifest: komac either
+          # refuses the duplicate entry, or writes an arm64 installer pointing
+          # at the x64 zip — and a duplicate installer hash is only a warning
+          # there, so that second outcome publishes. Hence all or nothing. A
+          # version missing from winget-pkgs can be submitted later; a manifest
+          # naming the wrong bytes sits in Microsoft's repository until someone
+          # notices.
+          $version = $env:VERSION
+          $missing = @()
+          $urls = foreach ($arch in 'x64', 'arm64') {
+            $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v$version/jdk-v$version-windows-$arch.zip"
+            try {
+              Invoke-WebRequest -UseBasicParsing -Method Head -Uri $url | Out-Null
+              $url
+            } catch {
+              # A 404 is the release not carrying this architecture. Anything
+              # else is this runner's problem, and must not be reported below
+              # as a fact about the release.
+              $status = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+              if ($status -ne 404) { throw }
+              $missing += $arch
+            }
+          }
+          if ($missing) {
+            throw "v$version publishes no $($missing -join ' or ') zip, so this version is not going to winget-pkgs: komac would have to guess which architecture the remaining zip answers for. Submit it by hand if it should be there without $($missing -join '/')."
+          }
+
+          & $komac update isacgalvao.jdk --version $version --submit --urls $urls

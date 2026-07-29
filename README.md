@@ -79,6 +79,39 @@ which catches a corrupt download but not a substituted one. A signature that
 is present and does not verify always aborts — as does a release serving
 `SHA256SUMS` without its signature.
 
+**scoop** — from v0.7.0 on, every release publishes its own manifest, so there
+is no bucket to add and that URL always resolves to the newest one:
+
+```powershell
+scoop install https://github.com/isacgalvao/jdk/releases/latest/download/jdk.json
+```
+
+**winget** — `winget install isacgalvao.jdk`, once the package is accepted into
+the Windows Package Manager Community Repository. That repository is moderated
+by Microsoft and merges on its own schedule; until it does, the command finds
+no such package. The [Roadmap](#roadmap) says where it stands.
+
+Either way you get the `jdk` command and nothing else. Open a **new terminal** —
+the directory the package manager puts `jdk` in reaches your `PATH` only in a
+shell started afterwards — and run `jdk setup` once. That is the step the
+one-liner does for you, and neither package manager can do it safely: winget
+has no post-install hook at all, and scoop's hooks fire on `scoop update` as
+well as on uninstall, so a package that ran setup from one would re-run it
+behind your back.
+
+Removing is the mirror image: run `jdk setup --undo` **before** `winget
+uninstall isacgalvao.jdk` or `scoop uninstall jdk`, because those delete only
+the files they placed. The undo hands back the `JAVA_HOME` and the two `PATH`
+entries and **keeps the JDKs you installed** — `jdk setup --undo --purge`
+deletes the store and them with it, which is the one that leaves nothing
+behind.
+
+Once setup has run, the `jdk` that answers is the copy in the store
+(`%USERPROFILE%\.jdk\bin`) — setup puts that directory on your `PATH` ahead of
+winget's `Links` and scoop's `shims`. Keep it current with **`jdk update`**:
+`winget upgrade` and `scoop update` refresh the copy they placed, which is no
+longer the one that runs.
+
 <details>
 <summary><b>Verifying a release by hand</b></summary>
 
@@ -326,8 +359,11 @@ informative only, never a failure.
 
 Not built yet, roughly in the order they are wanted:
 
-- winget and scoop packaging
 - more tools in the shim set (`jlink`, `jpackage`, `javap`, `jcmd`, …)
+
+Built and waiting on someone else: the **winget package**. The manifest and the
+release job live in `packaging/winget/`; `winget install isacgalvao.jdk` starts
+working when winget-pkgs merges the submission.
 
 Considered and parked until someone asks for them: a `javaw` GUI shim, Maven
 `toolchains.xml` integration, and Linux/macOS support.

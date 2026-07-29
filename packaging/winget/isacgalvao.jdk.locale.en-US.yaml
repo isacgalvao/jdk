@@ -1,0 +1,40 @@
+# Template: render.ps1 fills the __PLACEHOLDER__ values and drops these lines.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+
+PackageIdentifier: isacgalvao.jdk
+PackageVersion: __VERSION__
+PackageLocale: en-US
+
+Publisher: isacgalvao
+PublisherUrl: https://github.com/isacgalvao
+PublisherSupportUrl: https://github.com/isacgalvao/jdk/issues
+Author: isacgalvao
+
+PackageName: jdk
+PackageUrl: https://github.com/isacgalvao/jdk
+License: Apache-2.0
+LicenseUrl: https://github.com/isacgalvao/jdk/blob/master/LICENSE
+ReleaseNotesUrl: https://github.com/isacgalvao/jdk/releases/tag/v__VERSION__
+
+Moniker: jdk
+ShortDescription: A Java version manager for Windows - install, switch and pin JDKs with no admin rights.
+# Two paragraphs on purpose. The second one is the honest part: winget hands
+# you the command and stops there, and that is also all `winget uninstall`
+# takes back. This is the only place a winget user meets either fact, since a
+# portable package has no post-install or pre-uninstall hook to run the steps.
+Description: |-
+  jdk installs, switches and pins Java Development Kits on Windows without administrator rights. Real .exe shims for java, javac, jar, javadoc, jshell and keytool resolve the JDK a project pins on every call, and a persistent JAVA_HOME gives Maven, Gradle and your IDE one stable path to point at. It reads .jdkrc, .sdkmanrc, .java-version and asdf .tool-versions, so a repository that already ships an SDKMAN pin works with no extra steps.
+
+  This package installs the jdk command itself, and that is all it does. Open a new terminal, then run `jdk setup` once to register JAVA_HOME, put the shims on PATH and materialize them - winget has no post-install hook it could run that from. Before removing the package run `jdk setup --undo`, which hands those machine settings back but keeps the JDKs you installed; `jdk setup --undo --purge` deletes the store and them with it. `winget uninstall` removes only the files winget placed, and on its own would leave a JAVA_HOME and two PATH entries behind.
+Tags:
+  - java
+  - jdk
+  - jvm
+  - version-manager
+  - java-version-manager
+  - sdkman
+  - developer-tools
+  - cli
+
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0

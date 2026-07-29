@@ -1,0 +1,39 @@
+{
+    "version": "__VERSION__",
+    "description": "A Java version manager for Windows - install, switch and pin JDKs with no admin rights.",
+    "homepage": "https://github.com/isacgalvao/jdk",
+    "license": "Apache-2.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/isacgalvao/jdk/releases/download/v__VERSION__/jdk-v__VERSION__-windows-x64.zip",
+            "hash": "__SHA256_X64__"
+        },
+        "arm64": {
+            "url": "https://github.com/isacgalvao/jdk/releases/download/v__VERSION__/jdk-v__VERSION__-windows-arm64.zip",
+            "hash": "__SHA256_ARM64__"
+        }
+    },
+    "bin": "jdk.exe",
+    "notes": [
+        "Run `jdk setup` once to finish: it registers JAVA_HOME, prepends the shims to PATH and materializes them. Scoop cannot do it for you - its hooks fire on `scoop update` as well as on uninstall, so a package that ran setup from one would re-run it behind your back.",
+        "Before `scoop uninstall jdk`, run `jdk setup --undo` to hand those settings back. It keeps the JDKs you installed; `jdk setup --undo --purge` deletes the store and them with it. Uninstalling removes only the files scoop placed."
+    ],
+    "##": "checkver and autoupdate are inert while this manifest is installed by URL from a release asset - scoop only re-reads that URL. They are here so the same file works unchanged in a bucket, where a manifest without them would silently rot.",
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/isacgalvao/jdk/releases/download/v$version/jdk-v$version-windows-x64.zip",
+                "hash": {
+                    "url": "$url.sha256"
+                }
+            },
+            "arm64": {
+                "url": "https://github.com/isacgalvao/jdk/releases/download/v$version/jdk-v$version-windows-arm64.zip",
+                "hash": {
+                    "url": "$url.sha256"
+                }
+            }
+        }
+    }
+}
