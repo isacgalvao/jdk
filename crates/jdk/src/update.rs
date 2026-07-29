@@ -6,11 +6,13 @@
 //! spawned and nothing has to re-run `setup`.
 //!
 //! A failure AFTER the exe swap leaves a fully verified new jdk.exe with
-//! possibly stale shims; the error says so and points at `jdk setup`, whose
-//! shim materialization converges idempotently.
+//! possibly stale shims; the error says so, names every shim left behind
+//! rather than the first one, and points at `jdk setup`, whose shim
+//! materialization converges idempotently.
 
-use crate::fail::Fail;
+use crate::fail::{self, Fail};
 use indicatif::{ProgressBar, ProgressStyle};
+use jdk_core::Error;
 use jdk_core::http::Http;
 use jdk_core::{file_ops, release, shims};
 use jdk_resolve::version::Version;
@@ -88,8 +90,11 @@ pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
     let stored_shim = bin.join("jdk-shim.exe");
     swap_in(&new_shim, &stored_shim).map_err(|fail| fail.hint(SHIMS_LAG_BEHIND))?;
 
-    shims::materialize(&stored_shim, &store::shims(root))
+    let shims = shims::materialize(&stored_shim, &store::shims(root))
         .map_err(|err| Fail::engine(err).hint(SHIMS_LAG_BEHIND))?;
+    if !shims.failed.is_empty() {
+        return Err(fail::shims_failed(&shims.failed).hint(SHIMS_LAG_BEHIND));
+    }
 
     let _ = fs::remove_dir_all(&staging);
     eprintln!("jdk: updated {local} → {remote}");
@@ -107,16 +112,11 @@ pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
 /// `<root>\cache` buys.
 fn swap_in(source: &Path, dest: &Path) -> Result<(), Fail> {
     let incoming = dest.with_extension("exe.new");
-    file_ops::atomic_rename(source, &incoming).map_err(|err| {
-        Fail::new(
-            exit::FAILURE,
-            format!(
-                "cannot stage {} at {}: {err}",
-                source.display(),
-                incoming.display()
-            ),
-        )
-    })?;
+    // Through the engine error rather than a bespoke message: this is one of
+    // the `.exe` renames an antivirus handle or a full volume refuses, and
+    // that is where the hints for both live (BUG-11).
+    file_ops::atomic_rename(source, &incoming)
+        .map_err(|err| Fail::engine(Error::io("stage the new build at", &incoming)(err)))?;
     if let Err(err) = file_ops::replace_running(&incoming, dest) {
         // Never leave a staging orphan behind, whatever failed.
         let _ = fs::remove_file(&incoming);
@@ -191,7 +191,16 @@ fn sweep_leftovers(bin: &Path) {
             None => name.ends_with(".exe.new"),
         };
         if sweepable {
-            let _ = fs::remove_file(entry.path());
+            let path = entry.path();
+            // A DIRECTORY can end up on either name — moved aside from a
+            // `dest` that was one — and `remove_file` cannot touch it (os
+            // error 5), which would strand it forever against the promise
+            // `run` prints. The test above already established this leftover
+            // is superseded garbage, so removing it wholesale is right. A file
+            // merely in use fails both calls and is left for a later run.
+            if fs::remove_file(&path).is_err() {
+                let _ = fs::remove_dir_all(&path);
+            }
         }
     }
 }
@@ -237,6 +246,9 @@ mod tests {
 
     /// The settled state: the swap finished, so the aside has been superseded
     /// and the staging is an orphan (BUG-05 — the old filter ignored `.new`).
+    /// A DIRECTORY aside goes too: a `dest` that was a directory is renamed
+    /// aside as one, and `remove_file` alone would strand it in `bin` forever
+    /// while `run` promises the next update cleans it up.
     #[test]
     fn sweep_clears_the_staging_and_a_superseded_aside() {
         let temp = TempDir::new().unwrap();
@@ -245,11 +257,17 @@ mod tests {
         fs::write(bin.join("jdk.exe.old"), b"superseded").unwrap();
         fs::write(bin.join("jdk.exe.new"), b"orphaned staging").unwrap();
         fs::write(bin.join("config.old"), b"someone else's file").unwrap();
+        fs::create_dir_all(bin.join("jdk-shim.exe.old").join("inside")).unwrap();
+        fs::write(bin.join("jdk-shim.exe"), b"live shim").unwrap();
 
         sweep_leftovers(bin);
 
         assert!(!bin.join("jdk.exe.old").exists());
         assert!(!bin.join("jdk.exe.new").exists());
+        assert!(
+            !bin.join("jdk-shim.exe.old").exists(),
+            "directory aside too"
+        );
         assert_eq!(fs::read(bin.join("jdk.exe")).unwrap(), b"live");
         assert!(
             bin.join("config.old").exists(),

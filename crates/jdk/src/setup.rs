@@ -8,7 +8,7 @@
 //! value+type is saved to config.toml first — that backup is what
 //! `setup --undo` (`crate::undo`) hands back.
 
-use crate::fail::Fail;
+use crate::fail::{self, Fail};
 use jdk_core::config::JavaHomeBefore;
 use jdk_core::env::{self, JavaHomeState, RegKey};
 use jdk_core::{current, shims};
@@ -106,14 +106,24 @@ fn materialize_shims(root: &Path, shim_source: Option<&Path>) -> Result<PathBuf,
         .hint("reinstall with install.ps1, which places jdk-shim.exe next to jdk.exe")
         .hint("or point --shim-source at a jdk-shim.exe build"));
     }
-    let written = shims::materialize(&source, &store::shims(root)).map_err(Fail::engine)?;
-    if written.is_empty() {
+    let done = shims::materialize(&source, &store::shims(root)).map_err(Fail::engine)?;
+    // A failure is fatal — a partial tool set is what `jdk setup` exists to
+    // converge, so it must not go on to claim the environment is set up — and
+    // it silences the "up to date" line, which would otherwise be the LIKELY
+    // reading rather than a corner: the swap phase leaves a refused tool
+    // stale, `jdk setup` is the remedy every hint prescribes, and on the rerun
+    // the tools that landed compare equal, so `written` is empty while a shim
+    // is still wrong. Announcing both at once contradicts itself.
+    if !done.failed.is_empty() {
+        return Err(fail::shims_failed(&done.failed));
+    }
+    if done.written.is_empty() {
         eprintln!(
             "jdk: shims already up to date ({} tools)",
             shims::TOOLS.len()
         );
     } else {
-        eprintln!("jdk: materialized shims: {}", written.join(", "));
+        eprintln!("jdk: materialized shims: {}", done.written.join(", "));
     }
     Ok(source)
 }
