@@ -256,6 +256,15 @@ fn install_via_cli(root: &Path, pin: &Pin, vendor: &str) -> Result<Candidate, i3
 /// swap never touches, are the only thing still able to repair it. Deliberately
 /// reached ONLY after the exe has been looked for and not found: the resolution
 /// hot path must not pay a syscall for a window that virtually never opens.
+///
+/// The residual window that leaves open is accepted, not closed (BUG-16): the
+/// call sits on the auto-install path, so it never fires for a machine whose
+/// store ALREADY holds the pinned JDK — resolution succeeds, no install is
+/// attempted, and nothing ever looks for jdk.exe. Whoever loses jdk.exe in
+/// that state keeps a working `java` and no `jdk` until reinstalling with
+/// install.ps1, which is the supported repair. Reconciling it here instead
+/// would mean probing for the aside on every single resolution — the cost
+/// this path is shaped to avoid.
 fn restore_aside(dest: &Path) -> bool {
     let aside = dest.with_extension("exe.old");
     if fs::rename(&aside, dest).is_err() {
