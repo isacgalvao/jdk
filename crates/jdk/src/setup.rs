@@ -8,6 +8,7 @@
 //! value+type is saved to config.toml first — that backup is what
 //! `setup --undo` (`crate::undo`) hands back.
 
+use crate::console;
 use crate::fail::{self, Fail};
 use jdk_core::config::JavaHomeBefore;
 use jdk_core::env::{self, JavaHomeState, RegKey};
@@ -16,7 +17,6 @@ use jdk_resolve::config::Config;
 use jdk_resolve::exit;
 use jdk_resolve::store::{self, Candidate};
 use std::fs;
-use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
 pub fn run(root: &Path, yes: bool, shim_source: Option<&Path>) -> Result<(), Fail> {
@@ -260,40 +260,14 @@ fn write_java_home(
 /// stderr are a TTY (CI/pipes get the actionable error instead of a hang);
 /// plain Enter keeps the existing value (destructive default = no).
 fn confirm_replace(old: &env::EnvValue) -> bool {
-    let is_tty = io::stdin().is_terminal() && io::stderr().is_terminal();
-    if is_tty {
-        eprint!(
+    console::confirm(
+        console::interactive(),
+        format_args!(
             "jdk: JAVA_HOME is currently {} ({}), set outside jdk. Replace it? [y/N] ",
             old.text,
             old.kind()
-        );
-    }
-    decide_replace(is_tty, || {
-        let mut answer = String::new();
-        match io::stdin().read_line(&mut answer) {
-            Ok(read) if read > 0 => Some(answer),
-            _ => None,
-        }
-    })
-}
-
-/// The wiring at the heart of `confirm_replace`, pulled out so it can be
-/// exercised without a real TTY or stdin: given whether the console is
-/// interactive and a line reader, decide replace vs. refuse — no I/O of its
-/// own. `read_answer` is only ever invoked when `is_tty` is true; the
-/// off-TTY refusal never consults it (same shape as jdk-shim's
-/// `decide_install`).
-fn decide_replace(is_tty: bool, read_answer: impl FnOnce() -> Option<String>) -> bool {
-    if !is_tty {
-        return false;
-    }
-    match read_answer() {
-        Some(answer) => {
-            let answer = answer.trim();
-            answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
-        }
-        None => false,
-    }
+        ),
+    )
 }
 
 /// First-time junction: absent + something installed → point it at the best
@@ -451,33 +425,6 @@ mod tests {
         let untouched = env::read(&test.key, "JAVA_HOME").unwrap().unwrap();
         assert_eq!(untouched.text, hostile, "the value survives the abort");
         assert_eq!(broadcasts, 0, "an aborted setup must not broadcast");
-    }
-
-    #[test]
-    fn decide_replace_accepts_y_or_yes_case_insensitively() {
-        for answer in ["y\n", "Y\n", "yes\r\n", "YES\n", "  y  \n"] {
-            assert!(
-                decide_replace(true, || Some(answer.to_string())),
-                "{answer:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn decide_replace_refuses_no_empty_eof_or_garbage() {
-        for answer in ["n\n", "N\n", "no\n", "\n", "banana\n"] {
-            assert!(
-                !decide_replace(true, || Some(answer.to_string())),
-                "{answer:?}"
-            );
-        }
-        assert!(!decide_replace(true, || None), "EOF (0 bytes read) refuses");
-    }
-
-    #[test]
-    fn decide_replace_off_tty_refuses_without_reading() {
-        let decided = decide_replace(false, || panic!("read_answer must not be called off-TTY"));
-        assert!(!decided);
     }
 
     /// The sort key `(pre_release.is_none(), version, vendor)`: stable outranks

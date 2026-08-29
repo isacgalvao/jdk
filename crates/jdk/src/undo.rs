@@ -19,13 +19,14 @@
 //! alone; no amount of re-running makes it jdk's to delete. Either way the
 //! exit code stays 0, because the environment is already handed back.
 
+use crate::console;
 use crate::fail::Fail;
 use jdk_core::config::JavaHomeBefore;
 use jdk_core::env::{self, EnvValue, JavaHomeState, RegKey};
 use jdk_core::{current, file_ops};
 use jdk_resolve::{exit, store};
 use std::fs;
-use std::io::{self, IsTerminal};
+use std::io;
 use std::path::{Path, PathBuf};
 
 pub fn run(root: &Path, yes: bool, purge: bool) -> Result<(), Fail> {
@@ -438,33 +439,13 @@ fn remove_child(path: &Path, left: &mut Vec<Leftover>) {
 /// stdin AND stderr are a TTY (CI and pipes get the refusal instead of a hang),
 /// and plain Enter keeps the JDKs.
 fn confirm_purge(root: &Path, installed: usize) -> bool {
-    let is_tty = io::stdin().is_terminal() && io::stderr().is_terminal();
-    if is_tty {
-        eprint!(
+    console::confirm(
+        console::interactive(),
+        format_args!(
             "jdk: --purge deletes {} and the {installed} JDK(s) in it. Continue? [y/N] ",
             root.display()
-        );
-    }
-    decide_purge(is_tty, || {
-        let mut answer = String::new();
-        match io::stdin().read_line(&mut answer) {
-            Ok(read) if read > 0 => Some(answer),
-            _ => None,
-        }
-    })
-}
-
-/// The decision inside [`confirm_purge`], pulled out so it can be exercised
-/// without a real TTY or stdin — the same seam shape as setup's
-/// `decide_replace` and jdk-shim's `decide_install`. The `&&` short-circuit IS
-/// the off-TTY refusal, so `read_answer` is never consulted there; only `y` and
-/// `yes` agree, and Enter, EOF and garbage all keep the store.
-fn decide_purge(is_tty: bool, read_answer: impl FnOnce() -> Option<String>) -> bool {
-    is_tty
-        && read_answer().is_some_and(|answer| {
-            let answer = answer.trim();
-            answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
-        })
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -797,33 +778,5 @@ mod tests {
         assert_eq!(broadcasts, 0, "nothing changed, so nothing to announce");
         assert_eq!(sandbox.java_home(), None);
         assert_eq!(sandbox.path().unwrap().text, FOREIGN_PATH);
-    }
-
-    #[test]
-    fn decide_purge_accepts_y_or_yes_case_insensitively() {
-        for answer in ["y\n", "Y\n", "yes\r\n", "YES\n", "  y  \n"] {
-            assert!(
-                decide_purge(true, || Some(answer.to_string())),
-                "{answer:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn decide_purge_refuses_no_empty_eof_or_garbage() {
-        for answer in ["n\n", "N\n", "no\n", "\n", "banana\n"] {
-            assert!(
-                !decide_purge(true, || Some(answer.to_string())),
-                "{answer:?}"
-            );
-        }
-        assert!(!decide_purge(true, || None), "EOF (0 bytes read) refuses");
-    }
-
-    #[test]
-    fn decide_purge_off_tty_refuses_without_reading() {
-        assert!(!decide_purge(false, || panic!(
-            "read_answer must not be called off-TTY"
-        )));
     }
 }

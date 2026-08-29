@@ -9,6 +9,7 @@
 //! and exit with the shared contract in [`jdk_resolve::exit`].
 
 mod available;
+mod console;
 mod current;
 mod doctor;
 mod fail;

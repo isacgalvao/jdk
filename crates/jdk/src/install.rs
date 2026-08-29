@@ -6,7 +6,7 @@
 //! accepting them on that caller's behalf.
 
 use crate::fail::Fail;
-use crate::{remote, uninstall};
+use crate::{console, remote, uninstall};
 use indicatif::{ProgressBar, ProgressStyle};
 use jdk_core::catalog::Origin;
 use jdk_core::current::{self, Current};
@@ -14,7 +14,6 @@ use jdk_core::index::{Package, ReleaseStatus};
 use jdk_resolve::selector::Selector;
 use jdk_resolve::version::Version;
 use jdk_resolve::{exit, store};
-use std::io::{self, IsTerminal};
 use std::path::Path;
 
 pub fn run(root: &Path, selector: &str, from_shim: bool, accept_license: bool) -> Result<(), Fail> {
@@ -165,18 +164,13 @@ fn accept_terms(
         return Ok(());
     }
 
-    let interactive = !from_shim && io::stdin().is_terminal() && io::stderr().is_terminal();
-    if interactive {
-        eprint!("jdk: accept these terms and install {name}? [y/N] ");
-    }
-    let consented = decide_accept(interactive, || {
-        let mut answer = String::new();
-        match io::stdin().read_line(&mut answer) {
-            // Ok(0) is EOF: no answer to honor, and the default is no.
-            Ok(read) if read > 0 => Some(answer),
-            _ => None,
-        }
-    });
+    // The shim path never asks: `accept-license` was written for unattended
+    // installs, not to let someone else's `java` enter a license agreement in
+    // the machine owner's name.
+    let consented = console::confirm(
+        !from_shim && console::interactive(),
+        format_args!("jdk: accept these terms and install {name}? [y/N] "),
+    );
     if consented {
         return Ok(());
     }
@@ -196,26 +190,6 @@ fn accept_terms(
         fail = fail.hint("or once for this machine with `accept-license = true` in config.toml");
     }
     Err(fail.hint("`jdk available` lists the open-source builds, which need no acceptance"))
-}
-
-/// The wiring at the heart of [`accept_terms`], pulled out so it can be
-/// exercised without a real TTY or stdin: given whether the console is
-/// interactive and a line reader, decide accept vs. refuse — no I/O of its
-/// own. `read_answer` is only ever invoked when `interactive` is true; the
-/// off-console refusal never consults it (same shape as `setup`'s
-/// `decide_replace` and jdk-shim's `decide_install`). A bare Enter refuses:
-/// accepting a license is never a default.
-fn decide_accept(interactive: bool, read_answer: impl FnOnce() -> Option<String>) -> bool {
-    if !interactive {
-        return false;
-    }
-    match read_answer() {
-        Some(answer) => {
-            let answer = answer.trim();
-            answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
-        }
-        None => false,
-    }
 }
 
 /// Makes `installed_dir` the global — retargeting the `current` junction —
@@ -311,35 +285,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn license_consent_defaults_to_refusal() {
-        // No console (CI, the shim path, a pipe): refuse without reading —
-        // a hang here would block someone's build for an answer they cannot
-        // give.
-        assert!(!decide_accept(false, || panic!(
-            "an off-console prompt must not read stdin"
-        )));
-        // EOF and a bare Enter are both "no": accepting a license is never
-        // what silence means.
-        assert!(!decide_accept(true, || None));
-        for answer in ["\n", "\r\n", " ", "n", "no", "sure", "yep"] {
-            assert!(
-                !decide_accept(true, || Some(answer.to_string())),
-                "{answer:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn license_consent_accepts_only_an_explicit_yes() {
-        for answer in ["y", "Y", "yes", "YES", " yes \r\n"] {
-            assert!(
-                decide_accept(true, || Some(answer.to_string())),
-                "{answer:?}"
-            );
-        }
-    }
-
     /// Either route grants consent, and the message names the one that did:
     /// pointing at `--accept-license` when it was the config file sends the
     /// user hunting a flag they never typed.
@@ -370,10 +315,6 @@ mod tests {
         assert_eq!(Consent::of(false, true, true), Consent::Ask);
         assert_eq!(Consent::of(false, false, true), Consent::Ask);
         assert_eq!(Consent::of(false, true, true).granted_by(), None);
-        // Neither does the prompt, which the shim path never reaches.
-        assert!(!decide_accept(false, || panic!(
-            "the shim path must not ask"
-        )));
     }
 
     #[test]
