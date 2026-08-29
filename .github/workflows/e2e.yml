@@ -1,25 +1,368 @@
-# Nightly end-to-end run against the real world: real registry (the runner is
-# disposable), real network, a real Temurin JDK through the shim, Maven picking
-# up the registry JAVA_HOME, and an experimental Ctrl+C round-trip proving the
-# shim's ignore does not desensitize the child JVM's shutdown hooks (M1 review
-# follow-up).
+# End-to-end runs against the real world: real releases, real network, a real
+# Windows registry (the runner is disposable) and the real package managers.
 #
-# `jdk doctor` (inside e2e_validate.ps1) probes the published index for real,
-# so this workflow only goes fully green once isacgalvao/jdk-index exists.
-# Install still passes before that through the live foojay fallback.
+# WHAT RUNS ON A PULL REQUEST, and why not everything (CI-07). Exactly the
+# jobs whose outcome the working tree can change: `installer` and `update`
+# execute install.ps1, and `winget`/`scoop` execute packaging/. The two left
+# out — `oneliner` and `zip` — read nothing but published assets, so no pull
+# request can make them fail or pass differently; running them there would be
+# a check that cannot fail, which this repo has already decided is worse than
+# no check at all (TST-01). `source` is left out because it is the expensive
+# one, and the Rust it covers is driven on every pull request by `cargo test`
+# on Windows in ci.yml, against hermetic servers and a disposable registry
+# subkey.
+#
+# WHAT THE INSTALL JOBS CANNOT PROVE. They install the LATEST RELEASE, not the
+# commit under test — that is what makes them cheap (no build) and what they
+# are for: the installer, the manifests and the published assets are the parts
+# no cargo test can reach. A pull request that changes jdk.exe itself is
+# judged by ci.yml.
+#
+# `jdk doctor` probes the published index for real, so these jobs depend on
+# isacgalvao/jdk-index being reachable.
+#
+# No secrets. Every asset here is public; github.token, read-only, buys one
+# authenticated API call for the release tag because anonymous api.github.com
+# is rate limited per IP and hosted runners share them.
 
 name: e2e
 
 on:
+  pull_request:
   schedule:
     - cron: '43 4 * * *'
   workflow_dispatch:
+    inputs:
+      source:
+        description: 'Also run the source-built job (slow: full build, Maven, Ctrl+C)'
+        type: boolean
+        default: false
+
+# A newer push to a pull request makes the previous run's answer worthless,
+# and each of these is minutes of a Windows runner. Scheduled and dispatched
+# runs group by run_id, so they never cancel each other.
+concurrency:
+  group: e2e-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  real:
+  # CI-06. The installer as the working tree holds it, against the latest real
+  # release, on a clean runner. This is the job whose absence let BUG-01 ride
+  # through three releases: e2e built from source and called `jdk setup`
+  # directly, so nothing ever ran the README's primary path before a user did.
+  installer:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - run: ./.github/scripts/e2e_clean_env.ps1
+
+      - name: install with the working tree's install.ps1
+        run: |
+          ./install.ps1
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
+          $jdk = Join-Path $env:USERPROFILE '.jdk\bin\jdk.exe'
+          if (-not (Test-Path $jdk)) { throw "install.ps1 finished and left no $jdk" }
+          "JDK=$jdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Before any JDK exists. A fresh install has no junction and no global
+      # version, and doctor is meant to call that a note rather than a fault —
+      # a machine that has just run the installer is not a broken machine.
+      - name: jdk doctor on a fresh install
+        run: |
+          & $env:JDK doctor
+          if ($LASTEXITCODE -ne 0) { throw "jdk doctor exited $LASTEXITCODE" }
+
+      - name: jdk install temurin@21 (real download)
+        run: |
+          & $env:JDK install temurin@21
+          if ($LASTEXITCODE -ne 0) { throw "jdk install exited $LASTEXITCODE" }
+
+      - name: shim, junction, registry and doctor validations
+        run: ./.github/scripts/e2e_validate.ps1 -Jdk "$env:JDK" -ExpectedArch amd64
+
+  # CI-06's other half: the one-liner the README opens with, verbatim, so the
+  # URL and the installer that URL serves are checked as a pair. Deliberately
+  # stops at `jdk doctor` — what happens after this point is the released
+  # jdk.exe doing its job, and `installer` above already drives those same
+  # bytes through a real JDK install. Repeating it here would buy a second
+  # 190 MB download and no second fact.
+  oneliner:
+    if: github.event_name != 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - run: ./.github/scripts/e2e_clean_env.ps1
+
+      # Copied from README.md and kept identical to it on purpose: a one-liner
+      # that works only when spelled differently than it is documented is a
+      # one-liner that does not work.
+      - name: the README one-liner, verbatim
+        run: |
+          irm https://github.com/isacgalvao/jdk/releases/latest/download/install.ps1 | iex
+
+      - name: the published installer left a working jdk
+        run: |
+          $jdk = Join-Path $env:USERPROFILE '.jdk\bin\jdk.exe'
+          if (-not (Test-Path $jdk)) { throw "the one-liner finished and left no $jdk" }
+          & $jdk --version
+          if ($LASTEXITCODE -ne 0) { throw "jdk --version exited $LASTEXITCODE" }
+          & $jdk doctor
+          if ($LASTEXITCODE -ne 0) { throw "jdk doctor exited $LASTEXITCODE" }
+
+  # CI-20, first channel. The release zip with nothing but Expand-Archive
+  # behind it. Its real subject is the archive LAYOUT: install.ps1 searches
+  # recursively and would forgive a nested folder, while the winget manifest
+  # names `RelativeFilePath: jdk.exe` at the root and would not. This is the
+  # cheapest place that notices the day those two stop agreeing.
+  zip:
+    if: github.event_name != 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - run: ./.github/scripts/e2e_clean_env.ps1
+
+      - name: resolve the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/scripts/e2e_release_tag.ps1
+
+      - name: download and extract the release zip by hand
+        run: |
+          $asset = "jdk-$env:TAG-windows-x64.zip"
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/$asset"
+          $zip = Join-Path $env:RUNNER_TEMP $asset
+          $dir = Join-Path $env:RUNNER_TEMP 'zip-install'
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+
+          # Flat, and both executables side by side at the root: what `jdk
+          # setup` needs and what the winget manifest promises winget will
+          # find after it unpacks the same file.
+          foreach ($name in 'jdk.exe', 'jdk-shim.exe') {
+            $path = Join-Path $dir $name
+            if (-not (Test-Path $path)) {
+              throw "$name is not at the root of the release zip; it holds: $((Get-ChildItem -Recurse $dir | ForEach-Object FullName) -join ', ')"
+            }
+          }
+          "JDK=$(Join-Path $dir 'jdk.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: what the channel has to deliver
+        run: ./.github/scripts/e2e_channel.ps1 -Jdk "$env:JDK" -Version "$env:VERSION"
+
+  # CI-20, second channel. The manifest packaging/winget/ renders, installed
+  # by winget for real from a local manifest — the closest a runner gets to
+  # `winget install isacgalvao.jdk` before winget-pkgs has accepted the
+  # package. Rendering it is half the check: render.ps1 ends in `winget
+  # validate`, and the install then proves the parts validation cannot see —
+  # that the URLs resolve, the hashes match the bytes winget downloads, and
+  # `NestedInstallerType: portable` puts a `jdk` on PATH.
+  #
+  # winget is not provisioned by the runner image (it is absent from
+  # actions/runner-images' Windows2025-Readme.md) — it is there because
+  # Windows Server 2025 ships App Installer. So this job hard-fails when it is
+  # missing instead of skipping: a silent skip is how a channel rots
+  # unnoticed, and the fix (Cyberboss/install-winget, for windows-2022) is a
+  # decision for whoever reads the failure.
+  winget:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - run: ./.github/scripts/e2e_clean_env.ps1
+
+      - name: winget is present and may install a local manifest
+        run: |
+          # Get-Command first: a bare `winget` that does not exist is a
+          # PowerShell resolution error, and the step would die on it before
+          # reaching a message that explains anything.
+          if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            throw 'winget is not on PATH on this runner. It comes from Windows Server 2025 rather than from the runner image (actions/runner-images does not list it), so an image change can take it away; windows-2022 needs the Cyberboss/install-winget action.'
+          }
+          winget --version
+          if ($LASTEXITCODE -ne 0) { throw "winget --version exited $LASTEXITCODE" }
+          # Installing from a local manifest is off by default and only an
+          # administrator may turn it on. The runner is elevated.
+          winget settings --enable LocalManifestFiles
+          if ($LASTEXITCODE -ne 0) { throw "winget settings --enable LocalManifestFiles exited $LASTEXITCODE" }
+
+      - name: resolve the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/scripts/e2e_release_tag.ps1
+
+      - name: render the manifest for that release
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'winget-manifest'
+          ./packaging/winget/render.ps1 -Tag "$env:TAG" -OutDir $dir
+          "MANIFEST=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: winget install --manifest
+        run: |
+          # No --ignore-local-archive-malware-scan: a local manifest makes
+          # winget scan the archive it downloaded, and a Defender detection on
+          # this project's own release zip is something worth being told about.
+          # That flag is the knob if this step ever fails on the scan itself.
+          winget install --manifest "$env:MANIFEST" --disable-interactivity --accept-package-agreements --accept-source-agreements
+          if ($LASTEXITCODE -ne 0) { throw "winget install exited $LASTEXITCODE" }
+
+          # PortableCommandAlias puts a `jdk` link in the Links directory of
+          # whichever scope winget chose. Both are checked rather than one
+          # assumed: the runner is elevated, and that is exactly the condition
+          # under which winget may pick the machine scope over the user's.
+          $links = @(
+            (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\jdk.exe'),
+            (Join-Path $env:ProgramFiles 'WinGet\Links\jdk.exe')
+          )
+          $jdk = $links | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $jdk) {
+            throw "winget reported success and left no jdk.exe in either Links directory ($($links -join ', '))"
+          }
+          "JDK=$jdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: what the channel has to deliver
+        run: ./.github/scripts/e2e_channel.ps1 -Jdk "$env:JDK" -Version "$env:VERSION"
+
+  # CI-20, third channel. jdk.json as packaging/scoop/render.ps1 writes it,
+  # installed from a local file. The published route — `scoop install
+  # <latest/download/jdk.json>`, which the README documents — only becomes
+  # testable once a release carries that asset, and the first one to do so is
+  # v0.7.0; rendering locally is the same manifest by the same script over the
+  # same signed hashes, and it is what there is until then.
+  scoop:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - run: ./.github/scripts/e2e_clean_env.ps1
+
+      - name: install scoop
+        run: |
+          # The runner is elevated and scoop refuses that by default, except
+          # when GITHUB_ACTIONS and CI are both true — which they are here
+          # (ScoopInstaller/Install, install.ps1, the Test-IsAdministrator
+          # guard). So no -RunAsAdmin, which would install into a different
+          # layout than a user gets.
+          #
+          # Unpinned, unlike every action in this repository, and deliberately:
+          # what a pin would buy is reproducibility of scoop's own installer,
+          # which is not what this job is about, and it would rot on scoop's
+          # schedule rather than ours. The exposure is a disposable runner with
+          # a read-only token, no secrets, and nothing published from it.
+          Invoke-RestMethod -UseBasicParsing get.scoop.sh | Invoke-Expression
+          $shims = Join-Path $env:USERPROFILE 'scoop\shims'
+          if (-not (Test-Path (Join-Path $shims 'scoop.ps1'))) { throw "scoop did not install: no $shims\scoop.ps1" }
+          $shims | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: resolve the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/scripts/e2e_release_tag.ps1
+
+      - name: render jdk.json for that release
+        run: |
+          # Dot-sourced FIRST, before anything below assigns: install.ps1 has
+          # a param block, and dot-sourcing binds every one of its parameters
+          # into this scope. It brings in Get-SignedHash and the pinned key.
+          . ./install.ps1 -DefineOnly
+
+          $tag = $env:TAG
+          $asset = "jdk-$tag-windows-x64.zip"
+          $work = Join-Path $env:RUNNER_TEMP 'scoop-sums'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          # From the release's SIGNED SHA256SUMS, the same anchor the release
+          # job renders from — never from a download hashed here, which would
+          # only say the manifest describes whatever arrived.
+          $signed = Get-SignedHash "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag" $asset $work
+          if (-not $signed) { throw "could not verify the signed SHA256SUMS of $tag, so there is no hash to render" }
+
+          $manifest = Join-Path $env:RUNNER_TEMP 'jdk.json'
+          ./packaging/scoop/render.ps1 -Version "$env:VERSION" -X64Sha256 $signed -OutFile $manifest
+          "MANIFEST=$manifest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: scoop install the rendered manifest
+        run: |
+          scoop install "$env:MANIFEST"
+          if ($LASTEXITCODE -ne 0) { throw "scoop install exited $LASTEXITCODE" }
+          $jdk = Join-Path $env:USERPROFILE 'scoop\shims\jdk.exe'
+          if (-not (Test-Path $jdk)) { throw "scoop reported success and left no $jdk (the manifest's bin entry is what puts it there)" }
+          "JDK=$jdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: what the channel has to deliver
+        run: ./.github/scripts/e2e_channel.ps1 -Jdk "$env:JDK" -Version "$env:VERSION"
+
+  # CI-07. `jdk update` on an installation the real installer just made —
+  # against the real release host with the key compiled into the binary, then
+  # against a signed fake release on loopback that it actually swaps itself
+  # for. The script says which leg proves what and why neither is what
+  # crates/jdk/tests/update.rs already covers.
+  update:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      # No JDK is installed here: `jdk update` replaces jdk.exe and never
+      # looks at the JDKs in the store, so the download would buy nothing.
+      - name: install with the working tree's install.ps1
+        run: |
+          ./install.ps1
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
+          $jdk = Join-Path $env:USERPROFILE '.jdk\bin\jdk.exe'
+          if (-not (Test-Path $jdk)) { throw "install.ps1 finished and left no $jdk" }
+          "JDK=$jdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: the real anchor, then a real swap
+        run: ./.github/scripts/e2e_update.ps1 -Jdk "$env:JDK"
+
+  # The deep runtime job, and the only one that builds the commit under test:
+  # a real Temurin through the shim, Maven picking up the registry JAVA_HOME,
+  # and a Ctrl+C round-trip proving the shim's ignore does not desensitize the
+  # child JVM's shutdown hooks (M1 review follow-up). Nightly, or on demand —
+  # it is the expensive one, and ci.yml drives the same binaries on every pull
+  # request.
+  source:
+    if: github.event_name == 'schedule' || inputs.source
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +377,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.experimental }}
     timeout-minutes: 45
+    permissions:
+      contents: read
     defaults:
       run:
         shell: pwsh
@@ -43,13 +388,7 @@ jobs:
       # rust-toolchain.toml pins the toolchain; rustup auto-installs it on the
       # first cargo call.
 
-      - name: clear the runner's machine-scope JAVA_HOME (toolcache artifact)
-        # GitHub runners ship a machine-scope (HKLM) JAVA_HOME pointing at a
-        # preinstalled toolcache JDK. A clean user machine has none, so jdk
-        # doctor rightly flags the HKLM-vs-per-user conflict and exits non-zero.
-        # Remove it so this run reflects a normal install; the runner is
-        # disposable and runs elevated.
-        run: reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v JAVA_HOME /f 2>$null; Write-Host 'cleared machine-scope JAVA_HOME'
+      - run: ./.github/scripts/e2e_clean_env.ps1
 
       - name: build release (jdk.exe and jdk-shim.exe side by side)
         run: |
@@ -69,7 +408,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "jdk install exited $LASTEXITCODE" }
 
       - name: shim, junction, registry and doctor validations
-        run: ./.github/scripts/e2e_validate.ps1 -Jdk target/release/jdk.exe -ExpectedArch ${{ matrix.arch }}
+        env:
+          # Through the environment rather than pasted into the script text: a
+          # ${{ }} expansion is substituted before pwsh parses the line, so its
+          # content would be code rather than an argument.
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: ./.github/scripts/e2e_validate.ps1 -Jdk target/release/jdk.exe -ExpectedArch $env:EXPECTED_ARCH
 
       - name: mvn -version uses the registry JAVA_HOME
         run: ./.github/scripts/e2e_maven.ps1
