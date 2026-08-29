@@ -3,7 +3,7 @@
 //! a response claims to be, one request per connection via
 //! `Connection: close` — no extra dev-dependency),
 //! fake-JDK zip and catalog fixtures, an SSHSIG signer for release fixtures,
-//! and on-demand builds of the workspace binaries.
+//! and on-demand builds of the workspace binaries plus the text they printed.
 
 pub use jdk_core::download::sha256_hex;
 
@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -387,6 +387,19 @@ pub fn hold(path: &Path) -> std::fs::File {
         .expect("hold the file the way a scanner does")
 }
 
+/// What a finished process wrote to stdout, as text. Lossy on purpose: a
+/// suite asserting on a message must not fail on how invalid UTF-8 is
+/// spelled.
+pub fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// What a finished process wrote to stderr — where every jdk message,
+/// prompt and error goes (stdout carries data).
+pub fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
 /// Paths of the workspace `jdk-shim` and `fake_java` binaries, built on
 /// demand — integration tests of other crates cannot use `CARGO_BIN_EXE_*`
 /// (those exist only inside the owning crate's own tests).
@@ -439,7 +452,7 @@ fn built_executables(crate_dir: &str) -> HashMap<String, PathBuf> {
     assert!(
         output.status.success(),
         "building {crate_dir} failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr(&output)
     );
 
     let mut executables = HashMap::new();

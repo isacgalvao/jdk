@@ -6,6 +6,8 @@
 //! uses a different subset of it, so unused-item lints are off here.
 #![allow(dead_code)]
 
+pub use test_support::{stderr, stdout};
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -77,12 +79,4 @@ impl Sandbox {
         fs::create_dir_all(&deep).unwrap();
         deep
     }
-}
-
-pub fn stdout(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-pub fn stderr(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }

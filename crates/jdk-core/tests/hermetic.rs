@@ -24,7 +24,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use test_support::{
     Request, Response, Server, dead_url, fake_jdk_zip, package, serve_catalog, shim_binaries,
-    sshsig,
+    sshsig, stderr, stdout,
 };
 
 /// Loopback-permissive client with millisecond retries to keep tests fast.
@@ -115,16 +115,11 @@ fn installs_a_fake_jdk_from_a_local_index_and_the_shim_runs_it() {
         .output()
         .unwrap();
 
-    assert_eq!(
-        output.status.code(),
-        Some(7),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(7), "stderr: {}", stderr(&output));
+    let printed = stdout(&output);
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("fake-java argv=[-version]"),
-        "stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
+        printed.contains("fake-java argv=[-version]"),
+        "stdout: {printed}"
     );
 }
 

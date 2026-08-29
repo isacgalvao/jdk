@@ -7,7 +7,7 @@ use sha1::Digest;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
-use test_support::{Response, Server};
+use test_support::{Response, Server, stderr, stdout};
 
 const UPDATED: &str = "2026-07-17T00:00:00Z";
 const VENDORS: [&str; 6] = [
@@ -209,13 +209,9 @@ fn assert_ok(output: &Output) {
     assert!(
         output.status.success(),
         "generator failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        stdout(output),
+        stderr(output)
     );
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 fn read_index(dir: &Path) -> IndexFile {
@@ -323,8 +319,8 @@ fn drops_unverifiable_packages_with_warning() {
     let warnings = stderr(&output);
     assert!(warnings.contains("hash budget is spent"), "{warnings}");
     assert!(warnings.contains("ephemeral foojay link"), "{warnings}");
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(stdout.contains("2 dropped"), "{stdout}");
+    let summary = stdout(&output);
+    assert!(summary.contains("2 dropped"), "{summary}");
 }
 
 #[test]
@@ -809,8 +805,8 @@ fn urls_off_the_vendor_allowlist_are_dropped() {
     let warnings = stderr(&output);
     assert!(warnings.contains("evil.example"), "{warnings}");
     assert!(warnings.contains("not a known JDK vendor"), "{warnings}");
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(stdout.contains("1 dropped"), "{stdout}");
+    let summary = stdout(&output);
+    assert!(summary.contains("1 dropped"), "{summary}");
 }
 
 #[test]

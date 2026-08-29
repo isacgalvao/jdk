@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
 use test_support::{
-    Response, Server, dead_url, release_zip, release_zip_padded, sha256_hex, sshsig,
+    Response, Server, dead_url, release_zip, release_zip_padded, sha256_hex, sshsig, stderr,
 };
 
 const JDK: &str = env!("CARGO_BIN_EXE_jdk");
@@ -60,10 +60,6 @@ impl World {
             .output()
             .unwrap()
     }
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 /// The release asset name [`release::fetch_bundle`] will ask for.

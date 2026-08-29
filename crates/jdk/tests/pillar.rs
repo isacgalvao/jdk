@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
 use test_support::reg::TestKey;
-use test_support::{Response, Server, dead_url, index_json, sha256_hex, shim_binaries};
+use test_support::{
+    Response, Server, dead_url, index_json, sha256_hex, shim_binaries, stderr, stdout,
+};
 
 const JDK: &str = env!("CARGO_BIN_EXE_jdk");
 
@@ -114,14 +116,6 @@ impl World {
         let raw = self.user.key.get_raw_value(name).unwrap();
         (raw.bytes.to_vec(), raw.vtype)
     }
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 fn assert_ok(output: &Output) {

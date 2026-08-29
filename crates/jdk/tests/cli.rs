@@ -9,7 +9,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use tempfile::TempDir;
-use test_support::{Response, Server, dead_url, fake_jdk_zip, package, serve_catalog, sha256_hex};
+use test_support::{
+    Response, Server, dead_url, fake_jdk_zip, package, serve_catalog, sha256_hex, stderr, stdout,
+};
 
 const JDK: &str = env!("CARGO_BIN_EXE_jdk");
 
@@ -75,14 +77,6 @@ impl World {
     fn candidate(&self, name: &str) -> PathBuf {
         self.root.join("candidates").join("java").join(name)
     }
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 /// A served zip + its package entry, ready for `serve_catalog`.

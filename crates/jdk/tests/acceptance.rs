@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
-use test_support::shim_binaries;
+use test_support::{shim_binaries, stderr, stdout};
 
 const JDK: &str = env!("CARGO_BIN_EXE_jdk");
 
@@ -40,9 +40,9 @@ fn pin_current_which_and_the_shim_agree_on_the_same_executable() {
         assert!(
             output.status.success(),
             "jdk {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            stderr(&output)
         );
-        String::from_utf8_lossy(&output.stdout).into_owned()
+        stdout(&output)
     };
 
     // pin writes the file the shim will read.
@@ -77,13 +77,9 @@ fn pin_current_which_and_the_shim_agree_on_the_same_executable() {
         .env("JDK_ROOT", &root)
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "shim failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let shim_path = stdout
+    assert!(output.status.success(), "shim failed: {}", stderr(&output));
+    let spawned = stdout(&output);
+    let shim_path = spawned
         .lines()
         .find_map(|line| line.strip_prefix("fake-java exe="))
         .expect("fake java prints its own path");
