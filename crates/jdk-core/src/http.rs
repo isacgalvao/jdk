@@ -59,13 +59,13 @@ impl UrlPolicy {
         if self == UrlPolicy::LoopbackOnly && !loopback {
             return Err(Error::Security(format!("non-loopback URL rejected: {url}")));
         }
-        if url.strip_prefix("https://").is_some() {
+        if url.starts_with("https://") {
             if self == UrlPolicy::Strict && loopback {
                 return Err(Error::Security(format!("loopback URL rejected: {url}")));
             }
             return Ok(());
         }
-        if url.strip_prefix("http://").is_some() {
+        if url.starts_with("http://") {
             if self != UrlPolicy::Strict && loopback {
                 return Ok(());
             }

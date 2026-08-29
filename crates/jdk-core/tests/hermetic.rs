@@ -39,12 +39,20 @@ fn http() -> Http {
     .expect("build http client")
 }
 
+/// The fake-JDK archive every download test serves: `fake_java` wrapped in the
+/// vendor directory layout, so an install that completes produces a `bin` a
+/// shim can actually execute.
+fn jdk_zip() -> Vec<u8> {
+    let (_, fake_java) = shim_binaries();
+    fake_jdk_zip(&fs::read(&fake_java).unwrap())
+}
+
 /// M2 acceptance: install a fake JDK from a local index, then the real shim
 /// resolves a pin to it and propagates its exit code (M1 bridge).
 #[test]
 fn installs_a_fake_jdk_from_a_local_index_and_the_shim_runs_it() {
-    let (shim, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let (shim, _) = shim_binaries();
+    let zip = jdk_zip();
     let zip_sha = sha256_hex(&zip);
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("jdk root"); // spaces on purpose
@@ -122,8 +130,7 @@ fn installs_a_fake_jdk_from_a_local_index_and_the_shim_runs_it() {
 
 #[test]
 fn install_is_idempotent_and_downloads_once() {
-    let (_, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let zip = jdk_zip();
     let temp = TempDir::new().unwrap();
 
     let server = Server::start();
@@ -225,8 +232,7 @@ fn invalidate_honors_the_refresh_grace_window() {
 
 #[test]
 fn wrong_archive_sha256_blocks_the_install() {
-    let (_, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let zip = jdk_zip();
     let temp = TempDir::new().unwrap();
 
     let server = Server::start();
@@ -315,8 +321,7 @@ fn platform_file_diverging_from_index_sha_fails_after_one_refetch() {
 
 #[test]
 fn download_resumes_from_a_part_file() {
-    let (_, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let zip = jdk_zip();
     let split = zip.len() / 2;
     let temp = TempDir::new().unwrap();
     let dest = temp.path().join("t.zip");
@@ -410,8 +415,7 @@ fn streaming_body_is_not_bounded_by_the_request_timeout() {
 /// the download discards it and restarts unranged.
 #[test]
 fn a_416_resume_response_restarts_from_scratch() {
-    let (_, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let zip = jdk_zip();
     let temp = TempDir::new().unwrap();
     let dest = temp.path().join("t.zip");
     fs::write(temp.path().join("t.zip.part"), vec![0u8; zip.len() + 100]).unwrap();
@@ -446,8 +450,7 @@ fn a_416_resume_response_restarts_from_scratch() {
 
 #[test]
 fn a_server_ignoring_range_restarts_the_download_cleanly() {
-    let (_, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let zip = jdk_zip();
     let temp = TempDir::new().unwrap();
     let dest = temp.path().join("t.zip");
     // Garbage .part: if the client appended instead of restarting, the
@@ -475,8 +478,7 @@ fn a_server_ignoring_range_restarts_the_download_cleanly() {
 
 #[test]
 fn vendor_headers_survive_redirects() {
-    let (_, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let zip = jdk_zip();
     let temp = TempDir::new().unwrap();
 
     let server = Server::start();
@@ -511,8 +513,7 @@ fn vendor_headers_survive_redirects() {
 /// header Oracle's CDN serves an HTML license page, not the zip.
 #[test]
 fn the_oracle_license_cookie_reaches_the_download_wire() {
-    let (_, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let zip = jdk_zip();
     let temp = TempDir::new().unwrap();
 
     let server = Server::start();
@@ -540,8 +541,7 @@ fn the_oracle_license_cookie_reaches_the_download_wire() {
 
 #[test]
 fn redirect_to_non_loopback_http_is_blocked() {
-    let (_, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let zip = jdk_zip();
     let temp = TempDir::new().unwrap();
 
     let server = Server::start();
@@ -602,8 +602,7 @@ fn transient_gateway_failures_are_retried_and_hard_errors_are_not() {
 
 #[test]
 fn foojay_fallback_when_the_index_is_unreachable() {
-    let (_, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let zip = jdk_zip();
     let temp = TempDir::new().unwrap();
     let (os, arch) = current_platform();
 
@@ -761,8 +760,7 @@ fn the_ea_listing_adds_early_access_without_capping_the_ga_half() {
 /// real production constant, not just the mechanism.
 #[test]
 fn declared_total_over_the_archive_ceiling_is_rejected_before_reading_any_body() {
-    let (_, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let zip = jdk_zip();
     let temp = TempDir::new().unwrap();
     let dest = temp.path().join("t.zip");
     let part = temp.path().join("t.zip.part");
@@ -937,8 +935,7 @@ fn foojay_sha256_labeled_but_blank_checksum_is_refused() {
 /// wins"), and both callers agree on the final directory.
 #[test]
 fn concurrent_installs_of_the_same_candidate_download_once_and_agree_on_the_winner() {
-    let (_, fake_java) = shim_binaries();
-    let zip = fake_jdk_zip(&fs::read(&fake_java).unwrap());
+    let zip = jdk_zip();
     let temp = TempDir::new().unwrap();
 
     let server = Server::start();

@@ -329,10 +329,7 @@ mod tests {
 
     #[test]
     fn refuses_a_signature_from_another_key() {
-        // A syntactically perfect key that simply did not sign this. It is
-        // deliberately NOT the production key: a rotation is a find-replace
-        // over the pinned value, and it must not silently rewrite the key a
-        // negative test depends on being wrong.
+        // A syntactically perfect key that simply did not sign this.
         let other = PublicKey::parse(STRANGER).unwrap();
         let err = verify(SIG, SUMS.as_bytes(), &other, NAMESPACE).unwrap_err();
         assert!(err.to_string().contains("other than the one"), "{err}");

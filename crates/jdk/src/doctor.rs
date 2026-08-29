@@ -531,9 +531,8 @@ fn update_available() -> Check {
 fn cache_integrity(root: &Path) -> Check {
     let dir = store::cache(root).join("index");
     let index_path = dir.join("index.json");
-    let bytes = match fs::read(&index_path) {
-        Err(_) => return pass("cache", "empty — nothing fetched yet"),
-        Ok(bytes) => bytes,
+    let Ok(bytes) = fs::read(&index_path) else {
+        return pass("cache", "empty — nothing fetched yet");
     };
     // Schema skew before corruption: the cached file is intact, this client
     // is the one that cannot read it, and re-downloading would only fetch the

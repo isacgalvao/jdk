@@ -486,7 +486,7 @@ mod tests {
     /// hand rather than by running setup — that the two are inverses is what
     /// the pillar suite proves, with the real binaries.
     struct Sandbox {
-        _temp: TempDir,
+        temp: TempDir,
         root: PathBuf,
         key: TestKey,
         jdk: PathBuf,
@@ -519,7 +519,7 @@ mod tests {
         env::prepend_path(&key.key, &store::shims(&root)).unwrap();
 
         Sandbox {
-            _temp: temp,
+            temp,
             root,
             key,
             jdk,
@@ -733,7 +733,7 @@ mod tests {
     #[test]
     fn purge_removes_a_leftover_junction_without_touching_its_target() {
         let sandbox = sandbox();
-        let outside = sandbox._temp.path().join("outside");
+        let outside = sandbox.temp.path().join("outside");
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("keepme.txt"), b"not the store's to delete").unwrap();
         // A junction to `outside` parked on the staging name, with `current`

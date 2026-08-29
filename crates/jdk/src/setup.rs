@@ -44,7 +44,7 @@ fn apply(
     let state = env::java_home_state(key, &junction).map_err(Fail::engine)?;
     if let JavaHomeState::Foreign(old) = &state
         && !yes
-        && !confirm_replace(old)?
+        && !confirm_replace(old)
     {
         return Err(Fail::new(
             exit::FAILURE,
@@ -259,7 +259,7 @@ fn write_java_home(
 /// Consent for replacing a foreign JAVA_HOME: asks only when stdin AND
 /// stderr are a TTY (CI/pipes get the actionable error instead of a hang);
 /// plain Enter keeps the existing value (destructive default = no).
-fn confirm_replace(old: &env::EnvValue) -> Result<bool, Fail> {
+fn confirm_replace(old: &env::EnvValue) -> bool {
     let is_tty = io::stdin().is_terminal() && io::stderr().is_terminal();
     if is_tty {
         eprint!(
@@ -268,13 +268,13 @@ fn confirm_replace(old: &env::EnvValue) -> Result<bool, Fail> {
             old.kind()
         );
     }
-    Ok(decide_replace(is_tty, || {
+    decide_replace(is_tty, || {
         let mut answer = String::new();
         match io::stdin().read_line(&mut answer) {
             Ok(read) if read > 0 => Some(answer),
             _ => None,
         }
-    }))
+    })
 }
 
 /// The wiring at the heart of `confirm_replace`, pulled out so it can be
