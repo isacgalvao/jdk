@@ -63,9 +63,9 @@ $ProgressPreference = 'SilentlyContinue'
 
 $repo = 'isacgalvao/jdk'
 
-# The release signing key, pinned here exactly as jdk-core pins it. Rotating
-# it means rotating both, plus the copy in README.md and RELEASING.md — the
-# procedure is in RELEASING.md.
+# The release signing key, pinned here exactly as jdk-core pins it. This is one
+# of five pinned places that must always agree; RELEASING.md names them all and
+# carries the rotation procedure.
 $signingKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKufZs1YJGeiBZsIVZSpxMIR/1hmAu1/biqqKJzgDxu7'
 $signingPrincipal = 'release@jdk'
 $signingNamespace = 'jdk-release'

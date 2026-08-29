@@ -359,9 +359,10 @@ Not built yet, roughly in the order they are wanted:
 
 - more tools in the shim set (`jlink`, `jpackage`, `javap`, `jcmd`, …)
 
-Built and waiting on someone else: the **winget package**. The manifest and the
-release job live in `packaging/winget/`; `winget install isacgalvao.jdk` starts
-working when winget-pkgs merges the submission.
+Built and waiting on someone else: the **winget package**. The manifest lives
+in `packaging/winget/`, and `.github/workflows/release.yml` holds the job that
+submits it; `winget install isacgalvao.jdk` starts working when winget-pkgs
+merges the submission.
 
 Considered and parked until someone asks for them: a `javaw` GUI shim, Maven
 `toolchains.xml` integration, and Linux/macOS support.

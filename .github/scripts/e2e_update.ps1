@@ -185,8 +185,8 @@ try {
     # the runner happened to decode them with.
     Assert ($out -match "updated .*$([regex]::Escape($fakeVersion))") "it reports updating to $fakeVersion"
 
-    # The proof. This jdk.exe was 0.6.0 a moment ago, is the same path, was
-    # running when it was replaced, and now answers as the payload.
+    # The proof. This jdk.exe was the latest release a moment ago, is the same
+    # path, was running when it was replaced, and now answers as the payload.
     $reported = (& $Jdk --version | Out-String).Trim()
     Assert ($LASTEXITCODE -eq 0) 'the swapped-in jdk.exe runs'
     Assert ($reported -eq "jdk $payloadVersion") "it is the served payload (jdk --version says '$reported')"

@@ -143,7 +143,8 @@ The tag push is the point of no return — everything after is automatic.
 On the `v*` tag, `release.yml` runs five jobs — four in a line, and one
 alongside the last:
 
-- **gates**: `ci.yml` at the tagged commit — the set in §4.
+- **gates**: `ci.yml` at the tagged commit — §4's list, plus the MSRV check
+  and the shim size gate.
 - **build** (`windows-2025`, read-only token): resolves the version and
   re-checks the tag == Cargo version and the CHANGELOG section; `cargo publish
   --dry-run` for the three crates; builds `jdk.exe` (SBOM embedded via `cargo
