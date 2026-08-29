@@ -7,9 +7,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-function Assert([bool]$Condition, [string]$Message) {
-    if (-not $Condition) { throw "FAIL: $Message" }
-    Write-Host "ok: $Message"
+function Assert([bool]$Condition, [string]$What) {
+    if (-not $Condition) { throw "FAIL: $What" }
+    Write-Host "ok: $What"
 }
 
 # JAVA_HOME persisted in HKCU\Environment, pointing at the immutable junction.

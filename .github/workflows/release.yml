@@ -147,7 +147,6 @@ jobs:
           if ($shim.Length -ge 1MB) { throw "jdk-shim.exe is $($shim.Length) bytes, gate is < 1 MiB" }
 
       - name: build aarch64 (best-effort)
-        id: arm64
         continue-on-error: true
         run: |
           cargo auditable build --locked --release -p jdk --bin jdk --target aarch64-pc-windows-msvc
