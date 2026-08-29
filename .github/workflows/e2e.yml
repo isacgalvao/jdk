@@ -370,7 +370,7 @@ jobs:
           - runner: windows-2025
             arch: amd64
             experimental: false
-          # Best-effort second platform, not part of the v0.1 acceptance.
+          # Best-effort second platform: arm64 runs for signal and never fails the run.
           - runner: windows-11-arm
             arch: aarch64
             experimental: true
