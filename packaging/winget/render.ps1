@@ -128,7 +128,36 @@ try {
 }
 
 if (Get-Command winget -ErrorAction SilentlyContinue) {
+    # winget states its verdict in the exit code, so the code has to be read.
+    # PowerShell 7.4 turns a native non-zero exit into a terminating error on
+    # its own, which would abort here before the verdict could be told apart
+    # from a failure.
+    $PSNativeCommandUseErrorActionPreference = $false
     winget validate --manifest $OutDir
+    $verdict = $LASTEXITCODE
+    # Warnings are winget's own severity, and the one these manifests attract
+    # cannot be spelled away. `winget validate` compares the schema header
+    # against the `$id` of the schema THAT BUILD OF WINGET EMBEDS
+    # (ManifestSchemaValidation.cpp, IsValidSchemaHeaderUrl), and it resolves
+    # the schema by a `>=` cascade with no upper bound - so a winget older than
+    # the ManifestVersion declared here loads its newest schema instead and
+    # warns about a header that is correct. Dropping the header is not the way
+    # out either: an absent one warns too (SchemaHeaderNotFound). No single
+    # header satisfies every winget version, so winget's verdict decides.
+    #
+    # 0x8A150028 APPINSTALLER_CLI_ERROR_MANIFEST_VALIDATION_WARNING, in the
+    # signed form PowerShell reports. Its neighbour 0x8A150029 (…_FAILURE) is
+    # a real defect - a stray subdirectory under -OutDir, say - and still
+    # aborts, which is the whole point of running this at all.
+    if ($verdict -eq -1978335192) {
+        Write-Warning "winget validated the manifest with warnings (above). Warnings do not hold up a winget-pkgs submission - its CI validates with a current winget, which is also where a schema-header warning from an older one disappears."
+    } elseif ($verdict -ne 0) {
+        throw "winget validate --manifest $OutDir failed with exit code $verdict"
+    }
+    # $LASTEXITCODE is global and outlives this script: left as winget set it,
+    # every caller - a job step, a shell - would read this script's success as
+    # winget's warning code.
+    $global:LASTEXITCODE = 0
 } else {
     Write-Warning "winget is not on PATH, so the rendered manifest was not validated. Run 'winget validate --manifest $OutDir' on a machine that has it before submitting."
 }
