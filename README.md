@@ -71,12 +71,12 @@ into `iex` is one of the assets covered by the release signature, not whatever
 The installer downloads the release for your architecture, checks the
 signature over its `SHA256SUMS` against the key below, verifies the zip's
 SHA-256 against the line it covers, and runs `jdk setup` once to register
-`JAVA_HOME`, prepend the store to your `PATH` and materialize the shims. That
-signature check needs `ssh-keygen` (shipped with Windows since 10 1809); if
-it is missing, the installer warns and falls back to the per-file checksum,
-which catches a corrupt download but not a substituted one. A signature that
-is present and does not verify always aborts — as does a release serving
-`SHA256SUMS` without its signature.
+`JAVA_HOME`, prepend the store's two directories to your `PATH` and
+materialize the shims. That signature check needs `ssh-keygen` (shipped with
+Windows since 10 1809); if it is missing, the installer warns and falls back
+to the per-file checksum, which catches a corrupt download but not a
+substituted one. A signature that is present and does not verify always
+aborts — as does a release serving `SHA256SUMS` without its signature.
 
 **scoop** — from v0.7.0 on, every release publishes its own manifest, so there
 is no bucket to add and that URL always resolves to the newest one:

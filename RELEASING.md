@@ -118,7 +118,7 @@ run before the first artifact is built.
 1. Commit the bump and changelog together:
 
    ```powershell
-   git add Cargo.toml Cargo.lock crates CHANGELOG.md README.md
+   git add Cargo.toml Cargo.lock CHANGELOG.md README.md
    git commit -m "chore(release): vX.Y.Z"
    ```
 
