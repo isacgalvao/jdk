@@ -58,16 +58,16 @@ and `jdk-core.workspace = true`, with no version of their own to bump.
 anything observable — a new feature, a removed or renamed command, flag or exit
 code, a change to the config or pin format. **PATCH** is a fix that does not
 change expected behaviour, plus docs, performance and dependencies. In 0.x the
-minor slot already carries incompatible change, so nothing is lost by never
-reaching 1.0, and stabilizing the contract stays a deliberate decision rather
-than a side effect of a version number.
+minor slot already carries incompatible change, so reaching 1.0 stays a
+deliberate decision about the contract rather than a side effect of the
+numbering.
 
 Two contracts version separately from the product. The **index schema** carries
 its own `version` in `index.json` and moves when the wire format does — an
 additive change does not bump it, a change of shape does — and since 0.6.0 that
 number is load-bearing: a client meeting an index above the version it reads
-refuses the file and names the way to one that reads it, instead of guessing at
-a shape nobody told it about. The rule is written out in `jdk-core/src/index.rs`
+refuses the file and names the way to a client that reads it, rather than
+guessing at the shape. The rule is written out in `jdk-core/src/index.rs`
 beside the constant. The **Rust API** of `jdk-core` and `jdk-resolve` carries no
 contract at all: those crates are on crates.io only so `cargo install jdk` can
 resolve them, and both say so in their own docs — their version tracks the CLI,
@@ -238,7 +238,7 @@ upload to stop for a human.
 
 ## The package managers
 
-Two channels beside the one-liner, and both need the same thing said out loud:
+Two channels beside the one-liner, and one constraint governs both:
 **neither can run `jdk setup`, and neither can undo it.** winget has no
 post-install hook at all, and scoop's `pre_uninstall` fires on `scoop update`
 as well as on uninstall (`libexec/scoop-update.ps1:341`), so wiring `jdk setup
@@ -257,12 +257,11 @@ nowhere in `lib/install.ps1`, `libexec/scoop-update.ps1` or
 
 The README says as much on the install page; do not quietly promise otherwise.
 
-There is a second consequence, worth knowing before reading a bug report about
-it: `jdk setup` copies the running `jdk.exe` into `<store>\bin` and
-**prepends** that directory to the user `PATH`, ahead of winget's `Links` and
-scoop's `shims`. After setup the store copy is the one that runs and `jdk
-update` is what maintains it; `winget upgrade` and `scoop update` refresh a
-copy that no longer answers.
+There is a second consequence: `jdk setup` copies the running `jdk.exe` into
+`<store>\bin` and **prepends** that directory to the user `PATH`, ahead of
+winget's `Links` and scoop's `shims`. After setup the store copy is the one
+that runs and `jdk update` is what maintains it; `winget upgrade` and `scoop
+update` refresh a copy that no longer answers.
 
 ### When a release loses arm64
 

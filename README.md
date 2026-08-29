@@ -25,9 +25,8 @@
 
 Real `.exe` shims for `java`, `javac` and four more tools resolve the right JDK
 per project on every invocation, and a persistent `JAVA_HOME` gives Maven,
-Gradle and your IDE one stable path to point at. If you have used SDKMAN on
-Linux or macOS, this is the piece Windows was missing: clone a project that
-ships a `.sdkmanrc` and it just works.
+Gradle and your IDE one stable path to point at. Pin files written for SDKMAN
+and asdf are read as they stand.
 
 ## Features
 
@@ -50,8 +49,8 @@ ships a `.sdkmanrc` and it just works.
   the foojay Disco API. When the index has not caught up with a release, the
   live API answers instead; either way the download must come from a known
   vendor host and match a mandatory SHA-256.
-- **One small binary.** A focused Rust CLI plus a tiny per-tool shim. No JVM, no
-  runtime, no service.
+- **No JVM, no service.** A Rust CLI and a per-tool shim; nothing runs in the
+  background.
 
 ## Install
 
@@ -65,9 +64,9 @@ Windows registry, junctions and `.exe` shims, and does not compile elsewhere.
 irm https://github.com/isacgalvao/jdk/releases/latest/download/install.ps1 | iex
 ```
 
-That URL serves the installer **from the latest release**, not from a branch:
-the script you pipe into `iex` is one of the assets covered by the release
-signature, rather than whatever `master` happens to hold right now.
+That URL serves the installer **from the latest release**: the script you pipe
+into `iex` is one of the assets covered by the release signature, not whatever
+`master` happens to hold right now.
 
 The installer downloads the release for your architecture, checks the
 signature over its `SHA256SUMS` against the key below, verifies the zip's
@@ -222,30 +221,29 @@ unlinks the `current` junction (the reparse point only, never the JDK behind
 it), and removes `shims\` and `bin\`. One `WM_SETTINGCHANGE` goes out at the
 end, so new terminals pick it up.
 
-**Your installed JDKs stay.** They were downloaded on purpose, and the undo has
-no opinion about them: `candidates\`, the catalog cache and `config.toml` are
-left where they are. `jdk setup --undo --purge` deletes the whole store
+**Your installed JDKs stay.** `candidates\`, the catalog cache and `config.toml`
+are left where they are. `jdk setup --undo --purge` deletes the whole store
 instead, after asking — `--yes` answers for you, which is how CI would run it.
 It deletes the store one entry at a time, so a `bin\` it cannot remove (see
 below) costs you `bin\` and not the JDKs, the cache and the config it was also
 asked to take.
 
-Leftovers are named rather than hidden, and each comes with an instruction that
-actually works. The undo is normally invoked through `bin\jdk.exe`, which is one
-of the files it deletes: Windows does not release a running program, so that
-copy is renamed to `jdk.exe.old` and stays behind — and since the command that
-would collect it has just deleted itself, the output tells you which path to
-remove **by hand** once the process has exited. It never suggests re-running a
-`jdk` that is no longer there. Under `--purge` the path it names is the store
-root, so one deletion finishes the job.
+Leftovers are named in the output, each with the instruction to clear it. The
+undo is normally invoked through `bin\jdk.exe`, which is one of the files it
+deletes: Windows does not release a running program, so that copy is renamed
+to `jdk.exe.old` and stays behind — and since the command that would collect it
+has just deleted itself, the output tells you which path to remove **by hand**
+once the process has exited. It never suggests re-running a `jdk` that is no
+longer there. Under `--purge` the path it names is the store root, so one
+deletion finishes the job.
 
 A `shims\` directory a running `java` still holds behaves differently: it
 survives **whole**, with no rename involved, and the output names the directory.
 That one a later `jdk setup --undo` does collect, once that `java` has exited —
 which the output says, because in that case there is still a `jdk` to run.
-Anything jdk did not create is reported as *left alone* and never touched.
-Either way the exit code stays 0, and with nothing left to undo the command says
-so and exits 0.
+Anything jdk did not create is reported as *left alone* and never touched. The
+exit code stays 0 either way — including when there is nothing left to undo,
+which the command says outright.
 
 ## How a version is chosen
 
@@ -320,10 +318,10 @@ vendors that ship under proprietary terms (Oracle's NFTC, GraalVM's GFTC), so
 It deliberately does **not** carry the shim's auto-install path, which keeps
 refusing those terms whatever the config says. A `.jdkrc` comes from a
 repository, and standing consent to install unattended is not consent for
-someone else's project to enter a license agreement in your name — the person
-who typed `java` never asked for one. CI that needs a proprietary JDK installed
-unattended runs `jdk install <selector> --accept-license` explicitly, which is
-consent given on the very command that installs.
+someone else's project to enter a license agreement in your name. CI that needs
+a proprietary JDK installed unattended runs
+`jdk install <selector> --accept-license` explicitly, which is consent given on
+the very command that installs.
 
 ### Environment variables
 
