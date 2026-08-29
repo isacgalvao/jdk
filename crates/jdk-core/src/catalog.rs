@@ -305,8 +305,12 @@ fn ea_line(version: &Version) -> String {
 }
 
 /// Shared candidate ranking (index and foojay): stable beats pre-release/EA,
-/// ties go to the higher version — the same rule
-/// `jdk_resolve::store::best_candidate` applies to installed JDKs.
+/// ties go to the higher version. `jdk_resolve::store::best_candidate` orders
+/// installed JDKs the same way, but derives `stable` from the version alone —
+/// it never sees the release status this side also consults. Nothing shares
+/// the code (that crate is the shim's std-only firewall); what keeps the two
+/// answering alike is the cross-check
+/// `pick_best_agrees_with_store_best_candidate_across_scenarios` below.
 pub(crate) fn pick_best<T>(candidates: Vec<(Version, bool, T)>) -> Option<T> {
     candidates
         .into_iter()

@@ -111,8 +111,13 @@ pub fn best_candidate(
 
 /// Candidate ranking: stable (no pre-release) beats pre-release, then the
 /// higher version wins. The raw `Version` ordering alone would rank
-/// `21.0.5-ea` above `21.0.5`. jdk-core ranks remote packages by the same
-/// rule (`catalog::pick_best` there) — keep the two aligned.
+/// `21.0.5-ea` above `21.0.5`. jdk-core orders remote packages the same way
+/// (`catalog::pick_best` there) over a stricter notion of stable — it also
+/// sees the release status, which the store never does. Nothing shares the
+/// code (this crate is the shim's std-only firewall and cannot depend on
+/// jdk-core); what keeps the two answering alike is the executable
+/// cross-check `pick_best_agrees_with_store_best_candidate_across_scenarios`
+/// in that module.
 fn rank(version: &Version) -> (bool, &Version) {
     (version.pre_release.is_none(), version)
 }
