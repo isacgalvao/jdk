@@ -342,8 +342,10 @@ sidecar comes from the same host as the download, so an external value is
 refused with a message naming the variable rather than silently obeyed.
 
 Two more variables — `JDK_ENV_KEY` and `JDK_MACHINE_ENV_KEY` — redirect the
-registry writes to a disposable `HKCU` subkey. They exist for this project's
-own hermetic tests and are not part of the supported surface.
+registry writes to a disposable `HKCU` subkey. A third, `JDK_RELEASE_PUBKEY`,
+swaps the release verification key and is honored only together with a
+loopback `JDK_RELEASES`. All three exist for this project's own hermetic
+tests and are not part of the supported surface.
 
 ## Troubleshooting
 
