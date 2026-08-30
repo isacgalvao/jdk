@@ -71,13 +71,13 @@ $signingPrincipal = 'release@jdk'
 $signingNamespace = 'jdk-release'
 
 function Get-Arch {
-    # WMI processor architecture: 9 = AMD64, 5 = ARM, 12 = ARM64 as
-    # reported by Surface Pro X class machines.
+    # WMI processor architecture: 9 = AMD64, 12 = ARM64 as reported by
+    # Surface Pro X class machines. 5 (32-bit ARM) cannot execute an arm64
+    # binary, so it falls through to the unsupported throw below.
     try {
         $cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1).Architecture
         switch ($cpu) {
             9 { return 'x64' }
-            5 { return 'arm64' }
             12 { return 'arm64' }
         }
     } catch {
