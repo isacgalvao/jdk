@@ -201,9 +201,15 @@ fn sweep_leftovers(bin: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        let sweepable = match name.strip_suffix(".old") {
-            Some(live) => live.ends_with(".exe") && bin.join(live).exists(),
-            None => name.ends_with(".exe.new"),
+        // ASCII case-insensitive to match the filesystem: jdk writes these
+        // names in lowercase, but `run` promises the next update collects the
+        // leftover whatever casing is on disk.
+        let lower = name.to_ascii_lowercase();
+        let sweepable = if lower.ends_with(".exe.old") {
+            let live = &name[..name.len() - ".old".len()];
+            bin.join(live).exists()
+        } else {
+            lower.ends_with(".exe.new")
         };
         if sweepable {
             let path = entry.path();
@@ -288,6 +294,23 @@ mod tests {
             bin.join("config.old").exists(),
             "only executable leftovers are ours to delete"
         );
+    }
+
+    /// The filesystem does not distinguish case, so the sweep must not
+    /// either: an aside or staging in any casing is the same leftover.
+    #[test]
+    fn sweep_matches_leftovers_case_insensitively() {
+        let temp = TempDir::new().unwrap();
+        let bin = temp.path();
+        fs::write(bin.join("jdk.exe"), b"live").unwrap();
+        fs::write(bin.join("JDK.EXE.OLD"), b"superseded").unwrap();
+        fs::write(bin.join("JDK.EXE.NEW"), b"orphaned staging").unwrap();
+
+        sweep_leftovers(bin);
+
+        assert!(!bin.join("JDK.EXE.OLD").exists());
+        assert!(!bin.join("JDK.EXE.NEW").exists());
+        assert_eq!(fs::read(bin.join("jdk.exe")).unwrap(), b"live");
     }
 
     /// BUG-04: killed inside the swap window, `bin` holds no jdk.exe and the
