@@ -220,6 +220,7 @@ const TRUSTED: &[&str] = &[
     "https://download.java.net",
     "https://download.graalvm.org",
     "https://github.com/graalvm",
+    "https://github.com/ibmruntimes",
     "https://builds.openlogic.com",
     "https://github.com/SAP",
     "https://github.com/SapMachine",
