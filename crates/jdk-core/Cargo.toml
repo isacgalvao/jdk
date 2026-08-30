@@ -26,13 +26,13 @@ thiserror = "2"
 zip.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# M4 pillar: NTFS junction for `current` (no admin, unlike symlinks) and the
-# registry API for HKCU\Environment (never setx).
+# The Windows pillar: NTFS junction for `current` (no admin, unlike symlinks)
+# and the registry API for HKCU\Environment (never setx).
 junction = "2.0.0"
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
-    # M4: WM_SETTINGCHANGE broadcast (env) and the elevation probe (admin).
+    # WM_SETTINGCHANGE broadcast (env) and the elevation probe (admin).
     "Win32_UI_WindowsAndMessaging",
     "Win32_Security",
 ] }

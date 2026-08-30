@@ -1,5 +1,5 @@
 //! The index contract: what the `jdk-index` repository publishes and this
-//! client consumes. **This module is the source of truth for the M5
+//! client consumes. **This module is the source of truth for the index
 //! generator** — field doc comments are normative.
 //!
 //! Published layout, all files UTF-8 JSON:
@@ -192,7 +192,7 @@ pub fn safe_path_segments(path: &str) -> Result<Vec<&str>> {
 mod tests {
     use super::*;
 
-    /// Wire-format fixture: field names and shapes here are the M5 contract.
+    /// Wire-format fixture: field names and shapes here are the contract.
     /// Changing this test means changing the generator.
     const INDEX_JSON: &str = r#"{
         "version": 1,

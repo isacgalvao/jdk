@@ -1,5 +1,5 @@
-//! M3 acceptance (plan): the pin→current→which flow is coherent with the
-//! shim's resolution — same lib, proven with the REAL binaries: the path
+//! CLI acceptance: the pin→current→which flow is coherent with the shim's
+//! resolution — same lib, proven with the REAL binaries: the path
 //! `jdk which` prints is the executable a byte-identical shim copy actually
 //! spawns (the fake java prints its own path as evidence).
 

@@ -1,7 +1,7 @@
 //! `jdk use <selector>`: the global switch. One atomic junction retarget —
-//! JAVA_HOME keeps its value (decision 8), so every console and IDE already
-//! open resolves the new JDK on its next `java` invocation. No auto-install
-//! in v0.1: a missing candidate is an actionable error, not a download.
+//! JAVA_HOME keeps its value, so every console and IDE already open resolves
+//! the new JDK on its next `java` invocation. No auto-install in v0.1: a
+//! missing candidate is an actionable error, not a download.
 
 use crate::fail::{self, Fail};
 use crate::uninstall;

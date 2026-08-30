@@ -12,7 +12,7 @@ use jdk_resolve::selector::{Selector, normalize_vendor};
 use jdk_resolve::version::Version;
 use std::path::Path;
 
-/// Where the M5 `jdk-index` repository publishes to.
+/// Where the `jdk-index` repository publishes to.
 pub const DEFAULT_INDEX_URL: &str = "https://raw.githubusercontent.com/isacgalvao/jdk-index/main";
 
 /// One catalog entry as `jdk available` shows it — enough to pick a version,
@@ -122,8 +122,8 @@ impl Catalog {
             })
             .collect();
 
-        // Early access is opt-in per selector (decision D2): `matches` reads
-        // an absent pre-release as a wildcard, so without this filter a plain
+        // Early access is opt-in per selector: `matches` reads an absent
+        // pre-release as a wildcard, so without this filter a plain
         // `27` — a line that has never had a GA build — installs tonight's
         // nightly and says nothing. Eligibility is the release status the
         // catalog published, the same axis the foojay query filters on, NOT
@@ -267,12 +267,12 @@ enum IndexMiss {
     /// Unreachable, unknown vendor, or no matching version at all.
     Absent(Error),
     /// The line exists only as early access, which the selector did not ask
-    /// for (D2). Carries the best of those builds.
+    /// for. Carries the best of those builds.
     EarlyAccessOnly(Version),
 }
 
-/// The D2 refusal, spelled as the two commands that do work — this is where
-/// a user learns the pre-release selector exists at all.
+/// The early-access refusal, spelled as the two commands that do work — this
+/// is where a user learns the pre-release selector exists at all.
 fn early_access_only(vendor: &str, pattern: &Version, ea: &Version) -> Error {
     Error::Catalog(format!(
         "{vendor}@{pattern} has no general-availability build\n  \
@@ -343,11 +343,12 @@ mod tests {
         assert_eq!(chosen, Some("new"));
     }
 
-    /// The inverse of what this test asserted before D2: a pre-release is no
-    /// longer the fallback when nothing stable matches. `pick_best` still
-    /// ranks EA builds among themselves — it is reached only for a selector
-    /// that named a pre-release, which is what [`Catalog::find_in_index`]
-    /// now requires before an EA candidate is eligible at all.
+    /// The inverse of what this test asserted before early access became
+    /// opt-in per selector: a pre-release is no longer the fallback when
+    /// nothing stable matches. `pick_best` still ranks EA builds among
+    /// themselves — it is reached only for a selector that named a
+    /// pre-release, which is what [`Catalog::find_in_index`] now requires
+    /// before an EA candidate is eligible at all.
     #[test]
     fn pick_best_ranks_pre_releases_only_for_a_pre_release_selector() {
         let candidates = vec![

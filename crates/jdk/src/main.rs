@@ -1,8 +1,8 @@
-//! `jdk` CLI: install/uninstall/list/available/pin/current/which (M3) plus
-//! the Windows pillar (M4) — `setup` (persistent JAVA_HOME/PATH/shims, with
-//! `--undo` to hand them back),
-//! `use` (atomic junction retarget), `doctor` (named health checks) — and
-//! `update` (self-update from this project's GitHub releases).
+//! `jdk` CLI: install/uninstall/list/available/pin/current/which plus the
+//! Windows pillar — `setup` (persistent JAVA_HOME/PATH/shims, with `--undo`
+//! to hand them back), `use` (atomic junction retarget), `doctor` (named
+//! health checks) — and `update` (self-update from this project's GitHub
+//! releases).
 //!
 //! Output contract: stdout carries data, stderr carries messages, prompts and
 //! progress. Errors state what failed, what to do about it, and context —

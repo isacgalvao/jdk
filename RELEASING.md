@@ -272,9 +272,9 @@ arm64 zip. The three channels answer that differently, on purpose:
 - **The release itself still goes out.** If the previous release had an arm64
   zip and this one does not, `build` raises a `::warning::` naming the shrink
   and stops there. It is not a throw, because making a missing aarch64 build
-  fatal would settle **UX-12** — whether arm64 is a supported architecture or a
-  best-effort extra — as a side effect of a packaging change. Promoting arm64
-  turns that warning into a throw, and this is the line to change.
+  fatal would settle whether arm64 is a supported architecture or a best-effort
+  extra as a side effect of a packaging change. Promoting arm64 turns that
+  warning into a throw, and this is the line to change.
 - **scoop gets an x64-only manifest.** An arm64 user is then told the app does
   not support their architecture. On Windows 11 that costs nothing worth
   naming: an arm64 machine runs the x64 build under emulation. On Windows 10

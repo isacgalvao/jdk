@@ -1,7 +1,7 @@
 //! `jdk setup`: the once-per-user step that makes Windows see the store —
-//! JAVA_HOME (write-once, decision 8), PATH prepend of `shims\`, shim
-//! materialization, `bin\jdk.exe`, and the `current` junction when a global
-//! JDK is eligible. Idempotent: a second run reports a clean no-op.
+//! JAVA_HOME (write-once), PATH prepend of `shims\`, shim materialization,
+//! `bin\jdk.exe`, and the `current` junction when a global JDK is eligible.
+//! Idempotent: a second run reports a clean no-op.
 //!
 //! Defensive on foreign state: a JAVA_HOME set by another tool is only
 //! replaced with consent (TTY prompt, or `--yes` for scripts), and the old
@@ -138,9 +138,9 @@ fn sibling(name: &str) -> Result<PathBuf, Fail> {
     Ok(me.with_file_name(name))
 }
 
-/// Fills `<root>\bin\` with the pair the installed layout needs (decision 7):
-/// jdk.exe, where the shim's auto-install looks for it, and the jdk-shim.exe
-/// the shims were just materialized from. The shim has to travel with it
+/// Fills `<root>\bin\` with the pair the installed layout needs: jdk.exe,
+/// where the shim's auto-install looks for it, and the jdk-shim.exe the
+/// shims were just materialized from. The shim has to travel with it
 /// because `materialize_shims` resolves it as a sibling of the running exe —
 /// without a copy in `bin`, `jdk setup` run from the store (the remedy doctor
 /// recommends everywhere) would find nothing to materialize from.
@@ -184,9 +184,9 @@ fn place_beside(source: &Path, dest: &Path) {
     }
 }
 
-/// The write-once JAVA_HOME (decision 8): absolute junction path as REG_SZ.
-/// Consent for the Foreign case was granted upstream. Returns whether the
-/// registry changed.
+/// The write-once JAVA_HOME: absolute junction path as REG_SZ. Consent for
+/// the Foreign case was granted upstream. Returns whether the registry
+/// changed.
 fn write_java_home(
     root: &Path,
     config: &Config,

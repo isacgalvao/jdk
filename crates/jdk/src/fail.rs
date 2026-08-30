@@ -66,7 +66,7 @@ impl Fail {
 }
 
 /// The two Windows refusals a hint can act on, for every failure that reaches
-/// here as an [`Error::Io`] (BUG-11): the executable swaps and their staging,
+/// here as an [`Error::Io`]: the executable swaps and their staging,
 /// the download's writes, and the moves into the store — the `.exe` renames
 /// real-time antivirus opens handles on, and the big writes a full volume
 /// stops. `uninstall` said as much and the paths that meet it most often did
@@ -91,10 +91,10 @@ fn io_hint(err: &Error) -> Option<&'static str> {
     }
 }
 
-/// Every shim that could not be written, as ONE failure naming all of them
-/// (BUG-07). The swap phase attempts all six, so reporting only the first
-/// would cost a run per tool to discover the rest — and they usually share a
-/// single cause, which the hints then name once.
+/// Every shim that could not be written, as ONE failure naming all of them.
+/// The swap phase attempts all six, so reporting only the first would cost a
+/// run per tool to discover the rest — and they usually share a single cause,
+/// which the hints then name once.
 pub fn shims_failed(failed: &[(&'static str, Error)]) -> Fail {
     let mut message = format!(
         "{} of {} shims could not be written",
@@ -153,7 +153,7 @@ mod tests {
     use std::io;
     use std::path::Path;
 
-    /// BUG-11: install and update spend their time renaming `.exe` files and
+    /// Install and update spend their time renaming `.exe` files and
     /// writing hundreds of megabytes, and used to say nothing about the two
     /// things that stop both on Windows — while `uninstall` did. The in-use
     /// hint names BOTH causes its code can mean, because os error 5 does not
@@ -180,8 +180,8 @@ mod tests {
         assert!(!other.to_string().contains('→'), "{other}");
     }
 
-    /// BUG-07: the swap phase attempts every tool, so the report names every
-    /// one that failed — and the cause they share once, not once per tool.
+    /// The swap phase attempts every tool, so the report names every one that
+    /// failed — and the cause they share once, not once per tool.
     #[test]
     fn every_failed_shim_is_named_and_a_shared_cause_hinted_once() {
         let dir = Path::new("C:\\store\\shims");

@@ -28,8 +28,8 @@ const SHIMS_LAG_BEHIND: &str =
 /// Extraction ceilings for a release bundle, in place of the JDK-sized
 /// defaults [`jdk_core::extract::extract_zip`] carries: this archive holds
 /// two executables, LICENSE and README, unpacking to some 30 MiB — not the
-/// 15–30k entries and 4 GiB a real JDK justifies (BUG-10). The margin is
-/// there for growth in the bundle, not for a zip bomb.
+/// 15–30k entries and 4 GiB a real JDK justifies. The margin is there for
+/// growth in the bundle, not for a zip bomb.
 const MAX_UNPACKED: u64 = 128 * 1024 * 1024;
 const MAX_FILES: usize = 64;
 
@@ -49,7 +49,7 @@ pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
         eprintln!("jdk: already up to date ({local})");
         // The one reading of "up to date" that leaves a user wanting to go
         // the other way: this build is AHEAD of the latest release. Nothing
-        // here installs a named version — the installer does (BUG-08).
+        // here installs a named version — the installer does.
         if remote < local {
             eprintln!(
                 "  → this build is ahead of the latest release ({remote}); install.ps1 -Version {remote} goes back to it"
@@ -112,9 +112,8 @@ pub fn run(root: &Path, force: bool) -> Result<(), Fail> {
         );
     }
     // Said right where the version changed, because the aside above is swept
-    // by the next run and is no rollback artifact to count on (BUG-08). Not
-    // said when `--force` reinstalled the same version: there is nowhere to
-    // go back TO.
+    // by the next run and is no rollback artifact to count on. Not said when
+    // `--force` reinstalled the same version: there is nowhere to go back TO.
     if remote != local {
         eprintln!("  → to go back: install.ps1 -Version {local} installs a specific version");
     }
@@ -129,7 +128,7 @@ fn swap_in(source: &Path, dest: &Path) -> Result<(), Fail> {
     let incoming = dest.with_extension("exe.new");
     // Through the engine error rather than a bespoke message: this is one of
     // the `.exe` renames an antivirus handle or a full volume refuses, and
-    // that is where the hints for both live (BUG-11).
+    // that is where the hints for both live.
     file_ops::atomic_rename(source, &incoming)
         .map_err(|err| Fail::engine(Error::io("stage the new build at", &incoming)(err)))?;
     if let Err(err) = file_ops::replace_running(&incoming, dest) {
@@ -266,7 +265,7 @@ mod tests {
     }
 
     /// The settled state: the swap finished, so the aside has been superseded
-    /// and the staging is an orphan (BUG-05 — the old filter ignored `.new`).
+    /// and the staging is an orphan (the old filter ignored `.new`).
     /// A DIRECTORY aside goes too: a `dest` that was a directory is renamed
     /// aside as one, and `remove_file` alone would strand it in `bin` forever
     /// while `run` promises the next update cleans it up.
@@ -313,7 +312,7 @@ mod tests {
         assert_eq!(fs::read(bin.join("jdk.exe")).unwrap(), b"live");
     }
 
-    /// BUG-04: killed inside the swap window, `bin` holds no jdk.exe and the
+    /// Killed inside the swap window, `bin` holds no jdk.exe and the
     /// aside is the only copy of the CLI left on the machine. Deleting it here
     /// is what turned a crash into a bricked installation.
     #[test]

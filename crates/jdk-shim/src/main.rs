@@ -137,10 +137,10 @@ fn load_config(root: &Path) -> Result<Config, i32> {
     })
 }
 
-/// Pinned but not installed (plan decision 5): `never` fails actionably;
-/// `prompt` asks inline when stdin AND stderr are a TTY (anything else —
-/// CI, IDE pipes — fails actionably instead of hanging); `always` installs
-/// without asking. The download is delegated to `jdk.exe install
+/// Pinned but not installed: `never` fails actionably; `prompt` asks inline
+/// when stdin AND stderr are a TTY (anything else — CI, IDE pipes — fails
+/// actionably instead of hanging); `always` installs without asking. The
+/// download is delegated to `jdk.exe install
 /// --from-shim` (HTTP stays out of the shim), then the store is re-scanned.
 /// This miss path is cold: it loads config for the policy even when the
 /// bare-vendor lookup already read it once.
@@ -206,8 +206,8 @@ fn accepts(answer: &str) -> bool {
 
 fn install_via_cli(root: &Path, pin: &Pin, vendor: &str) -> Result<Candidate, i32> {
     let packaged = root.join("bin").join("jdk.exe");
-    // Decision 7 layout first, then a crash-interrupted update's leftovers,
-    // and only then let CreateProcess search the PATH.
+    // The store layout's `<root>\bin\jdk.exe` first, then a crash-interrupted
+    // update's leftovers, and only then let CreateProcess search the PATH.
     let jdk_exe = if packaged.exists() || restore_aside(&packaged) {
         packaged.clone()
     } else {
@@ -257,7 +257,7 @@ fn install_via_cli(root: &Path, pin: &Pin, vendor: &str) -> Result<Candidate, i3
 /// reached ONLY after the exe has been looked for and not found: the resolution
 /// hot path must not pay a syscall for a window that virtually never opens.
 ///
-/// The residual window that leaves open is accepted, not closed (BUG-16): the
+/// The residual window that leaves open is accepted, not closed: the
 /// call sits on the auto-install path, so it never fires for a machine whose
 /// store ALREADY holds the pinned JDK — resolution succeeds, no install is
 /// attempted, and nothing ever looks for jdk.exe. Whoever loses jdk.exe in
@@ -326,8 +326,8 @@ mod tests {
         }
     }
 
-    /// BUG-04: the state a process death between the aside and the
-    /// replacement leaves behind — `bin` holding only `jdk.exe.old`.
+    /// The state a process death between the aside and the replacement leaves
+    /// behind — `bin` holding only `jdk.exe.old`.
     #[test]
     fn restore_aside_puts_the_cli_back_after_an_interrupted_update() {
         let temp = TempDir::new().unwrap();

@@ -1,6 +1,6 @@
 //! Persistent user environment via the registry API — never `setx`
-//! (anti-model 1: silent truncation at 1024 chars, `REG_EXPAND_SZ` collapsed
-//! to literal `REG_SZ`, user PATH leaked into the machine scope).
+//! (silent truncation at 1024 chars, `REG_EXPAND_SZ` collapsed to literal
+//! `REG_SZ`, user PATH leaked into the machine scope).
 //!
 //! Every operation takes the Environment key as a parameter: production
 //! passes `HKCU\Environment` ([`user_key`]), tests pass a disposable
@@ -119,11 +119,11 @@ pub fn java_home_state(key: &RegKey, junction: &Path) -> Result<JavaHomeState> {
     })
 }
 
-/// Writes `JAVA_HOME = <junction>` as `REG_SZ` (decision 8, written once).
-/// The absolute resolved path, not a literal `%USERPROFILE%` expression: it
-/// stays correct under a `JDK_ROOT` override and is unambiguous for the
-/// tools that read the registry raw without expanding (anti-model 1 is
-/// exactly such a literal left where expansion never happens).
+/// Writes `JAVA_HOME = <junction>` as `REG_SZ`, once. The absolute resolved
+/// path, not a literal `%USERPROFILE%` expression: it stays correct under a
+/// `JDK_ROOT` override and is unambiguous for the tools that read the
+/// registry raw without expanding (the `REG_SZ` collapse `setx` performs
+/// produces exactly such a literal, left where expansion never happens).
 pub fn set_java_home(key: &RegKey, junction: &Path) -> Result<()> {
     let value = string_value(&junction.to_string_lossy(), RegType::REG_SZ);
     key.set_raw_value(JAVA_HOME, &value)
@@ -133,7 +133,7 @@ pub fn set_java_home(key: &RegKey, junction: &Path) -> Result<()> {
 /// Writes a string value back with its registry TYPE — the counterpart of
 /// [`read`]. `setup --undo` restores JAVA_HOME through it, and the type is
 /// half the restoration: putting `%JAVA17%\home` back as `REG_SZ` would hand
-/// the user a literal that never expands again (anti-model 1).
+/// the user a literal that never expands again.
 pub fn write(key: &RegKey, name: &str, value: &EnvValue) -> Result<()> {
     let vtype = if value.expandable {
         RegType::REG_EXPAND_SZ
@@ -278,9 +278,8 @@ pub fn remove_path_entries(key: &RegKey, dirs: &[PathBuf]) -> Result<Vec<PathBuf
 }
 
 /// How many PATH entries of `path_text` name `dir` — 1 is healthy, 0 means
-/// setup never ran, more means duplication (anti-model 5). Comparison is
-/// Windows-flavored: case-insensitive, surrounding quotes and trailing
-/// separators ignored.
+/// setup never ran, more means duplication. Comparison is Windows-flavored:
+/// case-insensitive, surrounding quotes and trailing separators ignored.
 pub fn path_count(path_text: &str, dir: &Path) -> usize {
     let wanted = normalize_entry(&dir.to_string_lossy());
     path_text
@@ -413,7 +412,7 @@ mod tests {
             java_home_state(&test.key, &junction()).unwrap(),
             JavaHomeState::Ours
         );
-        // The write is REG_SZ with the absolute path (decision 8).
+        // The write is REG_SZ with the absolute path.
         let written = read(&test.key, JAVA_HOME).unwrap().unwrap();
         assert_eq!(written.text, junction().to_string_lossy());
         assert!(!written.expandable);

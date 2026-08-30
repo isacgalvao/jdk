@@ -1,8 +1,8 @@
 //! Hermetic end-to-end tests: a loopback HTTP server serves an index fixture
 //! and a fake-JDK zip; nothing touches the real network (the URL policy's
 //! loopback mode is the injection point — no test-only switches exist in
-//! production code). The acceptance test finishes with the M1 bridge: the
-//! real shim executes the JDK that jdk-core just installed.
+//! production code). The acceptance test finishes by crossing into the shim:
+//! the real shim executes the JDK that jdk-core just installed.
 
 use jdk_core::Error;
 use jdk_core::cache::Cache;
@@ -47,8 +47,8 @@ fn jdk_zip() -> Vec<u8> {
     fake_jdk_zip(&fs::read(&fake_java).unwrap())
 }
 
-/// M2 acceptance: install a fake JDK from a local index, then the real shim
-/// resolves a pin to it and propagates its exit code (M1 bridge).
+/// Install-to-execution acceptance: install a fake JDK from a local index,
+/// then the real shim resolves a pin to it and propagates its exit code.
 #[test]
 fn installs_a_fake_jdk_from_a_local_index_and_the_shim_runs_it() {
     let (shim, _) = shim_binaries();
@@ -99,7 +99,7 @@ fn installs_a_fake_jdk_from_a_local_index_and_the_shim_runs_it() {
             .exists()
     );
 
-    // --- M1 bridge: byte-identical shim copy executes the installed JDK.
+    // --- Into the shim: byte-identical shim copy executes the installed JDK.
     let shims = temp.path().join("shims");
     let project = temp.path().join("proj");
     fs::create_dir_all(&shims).unwrap();
@@ -1311,9 +1311,10 @@ fn a_bundle_that_misses_its_signed_hash_blocks_and_leaves_nothing_behind() {
     assert!(leftovers.is_empty(), "nothing written: {leftovers:?}");
 }
 
-/// SEC-01's core claim: whoever serves the release does not get to say what
-/// its checksums are. The sums are edited after signing — exactly what a
-/// compromised release host can do — and the signature no longer covers them.
+/// The signed anchor's core claim: whoever serves the release does not get to
+/// say what its checksums are. The sums are edited after signing — exactly
+/// what a compromised release host can do — and the signature no longer
+/// covers them.
 #[test]
 fn sha256sums_edited_after_signing_are_refused_before_any_download() {
     let server = Server::start();
@@ -1404,8 +1405,8 @@ fn a_release_missing_either_signature_artifact_refuses_the_update() {
 
 /// The zip is served and the signature verifies, but the signed sums say
 /// nothing about this asset — the shape of a valid `SHA256SUMS` lifted from
-/// another release (BUG-09: the asset name carries the version, so an older
-/// release's sums cannot cover a newer release's zip).
+/// another release (the asset name carries the version, so an older release's
+/// sums cannot cover a newer release's zip).
 #[test]
 fn a_zip_absent_from_the_signed_sums_refuses_the_update() {
     let server = Server::start();

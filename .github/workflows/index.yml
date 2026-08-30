@@ -1,7 +1,7 @@
 # Daily generation and publication of the jdk-index data repository
 # (isacgalvao/jdk-index), with a loud failure path: any failed run opens or
 # updates an issue labeled `index-pipeline` — an index cron that dies silently
-# goes unnoticed (anti-model 7).
+# goes unnoticed.
 #
 # Publishing needs the repository secret INDEX_DEPLOY_KEY: a private SSH key
 # whose public half is a write-enabled deploy key on isacgalvao/jdk-index.

@@ -669,7 +669,7 @@ mod tests {
         assert_eq!(broadcasts, 0);
     }
 
-    /// H1: `fs::remove_dir_all(root)` walks the children in directory order,
+    /// `fs::remove_dir_all(root)` walks the children in directory order,
     /// and `bin\` — which holds the aside of the running binary — comes first.
     /// The single refusal there aborted the whole walk, so the JDKs, the cache
     /// and the config survived a command that reported a purge.

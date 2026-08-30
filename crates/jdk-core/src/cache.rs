@@ -38,7 +38,7 @@ impl Cache {
     }
 
     /// Custom TTL and grace window; `ttl` of zero revalidates on every read
-    /// (tests and, in M3, `--refresh`).
+    /// (tests and the CLI's `--refresh`).
     pub fn with_ttl(jdk_root: &Path, ttl: Duration, grace: Duration) -> Self {
         let cache = jdk_resolve::store::cache(jdk_root);
         Cache {
@@ -114,9 +114,9 @@ impl Cache {
         }
     }
 
-    /// Forced invalidation (M3 `--refresh`). Honors the grace window: an entry
-    /// fetched moments ago survives, so refresh storms cannot thrash the
-    /// cache. Returns whether the entry was actually dropped.
+    /// Forced invalidation (the CLI's `--refresh`). Honors the grace window:
+    /// an entry fetched moments ago survives, so refresh storms cannot thrash
+    /// the cache. Returns whether the entry was actually dropped.
     pub fn invalidate(&self, relpath: &str) -> Result<bool> {
         let (body_path, meta_path) = self.entry_paths(relpath)?;
         let _lock = self.hold_lock()?;

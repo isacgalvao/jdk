@@ -92,7 +92,8 @@ fn jdkrc_wins_over_sdkmanrc_in_the_same_directory() {
 fn no_pin_runs_the_global_current_jdk() {
     let sandbox = sandbox();
     fs::write(sandbox.project.join(".tool-versions"), "nodejs 20.10.0\n").unwrap();
-    // Plain directory standing in for the junction (junction creation is M4).
+    // Plain directory standing in for the junction (creating the real one is
+    // `jdk setup`'s job).
     let current_bin = sandbox.root.join("current").join("bin");
     fs::create_dir_all(&current_bin).unwrap();
     fs::copy(FAKE_JAVA, current_bin.join("java.exe")).unwrap();
@@ -142,7 +143,7 @@ fn uppercase_shim_name_resolves_the_same_lowercase_tool() {
 fn bare_pin_resolves_with_the_config_vendor() {
     let sandbox = sandbox();
     // Only zulu is installed: a bare `21` reaches it solely through the
-    // config's vendor (the M1 hardcoded temurin default is gone).
+    // config's vendor (the hardcoded temurin default is gone).
     sandbox.install("zulu@21.0.4");
     sandbox.config("vendor = \"zulu\"\n");
     fs::write(sandbox.project.join(".java-version"), "21\n").unwrap();

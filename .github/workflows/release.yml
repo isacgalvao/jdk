@@ -7,7 +7,7 @@
 # gates and uploads the same artifacts as workflow artifacts (unsigned), so the
 # pipeline can be exercised without cutting a release.
 #
-# Five jobs, and the split between the middle two is the point (CI-12): `build`
+# Five jobs, and the split between the middle two is the point: `build`
 # runs cargo — meaning it runs every build script in the dependency tree — and
 # holds nothing but read access, while `release` holds the OIDC token that mints
 # provenance and the write access that publishes, and runs no build at all. It
@@ -27,15 +27,15 @@
 # would submit with is absent, which is also the state before the package has
 # been submitted by hand for the first time.
 #
-# Two signatures, two questions, no overlap (CI-11): the SSHSIG answers "is this
+# Two signatures, two questions, no overlap: the SSHSIG answers "is this
 # the release the maintainer cut", which a client can check offline against a
 # compiled-in key, and the attestations answer "was it built here, from this
 # source". SHA256SUMS is what the first one covers, and every asset's hash is in
 # it.
 #
 # Advisory scanning is not here: ci.yml's `deny` job covers the same RustSec
-# database for every gate run, this one included (CI-10). `cargo auditable`
-# stays — embedding the SBOM in jdk.exe is a different job from checking it.
+# database for every gate run, this one included. `cargo auditable` stays —
+# embedding the SBOM in jdk.exe is a different job from checking it.
 #
 # Everything that touches a zip runs on Windows: the shim, the Defender scan and
 # the zips are all Windows-native. aarch64 is best-effort (continue-on-error)
@@ -193,10 +193,11 @@ jobs:
           # An arm64 zip the previous release had and this one does not shrinks
           # the supported matrix under people already running arm64. A warning
           # and not a throw: whether a missing aarch64 build should stop a
-          # release is UX-12's question, and deciding it here would decide it by
-          # accident. `latest` is the PREVIOUS release only on a tag's first
-          # run - re-run this workflow once the release exists and the
-          # comparison is against itself.
+          # release is the open question of whether arm64 is supported or
+          # best-effort, and deciding it here would decide it by accident.
+          # `latest` is the PREVIOUS release only on a tag's first run - re-run
+          # this workflow once the release exists and the comparison is against
+          # itself.
           if (-not (Test-Path (Join-Path $dist "jdk-v$version-windows-arm64.zip"))) {
             try {
               $previous = Invoke-RestMethod -UseBasicParsing -Headers @{
@@ -416,10 +417,10 @@ jobs:
   # jdk-shim is not published, and naming them here means a new crate cannot
   # reach crates.io by forgetting a manifest key.
   #
-  # `environment: release` is where CARGO_REGISTRY_TOKEN lives (CI-13): a
-  # long-lived token that can publish executable code to third parties is the
-  # one secret in this repository worth an approval gate and an audit trail of
-  # its own, and an environment is the only place Actions offers either.
+  # `environment: release` is where CARGO_REGISTRY_TOKEN lives: a long-lived
+  # token that can publish executable code to third parties is the one secret
+  # in this repository worth an approval gate and an audit trail of its own,
+  # and an environment is the only place Actions offers either.
   publish-crates:
     needs: release
     runs-on: windows-2025

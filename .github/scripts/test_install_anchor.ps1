@@ -1,5 +1,5 @@
-# Hermetic test of install.ps1's release-checksum anchor (SEC-03): which
-# checksum the installer trusts, and when it refuses instead of falling back.
+# Hermetic test of install.ps1's release-checksum anchor: which checksum the
+# installer trusts, and when it refuses instead of falling back.
 #
 # install.ps1 is dot-sourced with -DefineOnly, so its functions run against a
 # loopback server serving files from a temp directory - no real network, no

@@ -1,7 +1,7 @@
-//! Shim materialization: every JDK tool of the v0.1 set (decision 10) is a
-//! byte-identical copy of `jdk-shim.exe` named after the tool — the shim
-//! dispatches on argv[0]. Copies, not symlinks: no admin, no Developer Mode
-//! (anti-model 3), and cmd.exe/IDEs see real `.exe` files.
+//! Shim materialization: every JDK tool of the v0.1 set is a byte-identical
+//! copy of `jdk-shim.exe` named after the tool — the shim dispatches on
+//! argv[0]. Copies, not symlinks: no admin, no Developer Mode, and
+//! cmd.exe/IDEs see real `.exe` files.
 
 use crate::error::{Error, Result};
 use crate::file_ops;
@@ -31,8 +31,8 @@ pub struct Tool {
     pub availability: Availability,
 }
 
-/// The v0.1 shim set (decision 10). None of these six is distribution-exclusive,
-/// so the only availability dimension that matters is the JDK major.
+/// The v0.1 shim set. None of these six is distribution-exclusive, so the
+/// only availability dimension that matters is the JDK major.
 pub const TOOLS: [Tool; 6] = [
     Tool {
         name: "java",
@@ -74,7 +74,7 @@ pub struct Materialized {
 
 /// Materializes every [`TOOLS`] shim in `shims_dir` as a byte-identical copy
 /// of `source`, in two phases, because the set is only useful when its members
-/// agree on a version (BUG-07).
+/// agree on a version.
 ///
 /// NTFS has no transaction spanning N files, so atomicity across the set is
 /// not on offer and this does not pretend otherwise. What is on offer is a
@@ -199,7 +199,7 @@ mod tests {
         assert!(!shims.join("jar.exe.new").exists(), "no staging leftovers");
     }
 
-    /// BUG-07, phase one: a staging copy that cannot be made aborts before ANY
+    /// Phase one: a staging copy that cannot be made aborts before ANY
     /// shim is swapped, so the set stays uniformly on the version it had
     /// instead of splitting across two. A HELD `jar.exe.new` is the hermetic
     /// stand-in for the volume filling up mid-run — it survives the entry
@@ -236,7 +236,7 @@ mod tests {
         );
     }
 
-    /// BUG-05: a death between the staging copy and the swap leaves several
+    /// A death between the staging copy and the swap leaves several
     /// MiB per tool in a directory that is on the PATH, and the old filter
     /// only ever looked at `.exe.old`.
     #[test]
@@ -253,7 +253,7 @@ mod tests {
         assert!(!shims.join("java.exe.new").exists());
     }
 
-    /// BUG-04, from the shim side: `replace_running` empties `dest` before the
+    /// From the shim side: `replace_running` empties `dest` before the
     /// replacement lands, so an aside whose tool is still missing is the only
     /// copy left — sweeping it there would destroy it. The superseded half is
     /// a DIRECTORY, the shape a `dest` that was one leaves behind: it is
@@ -345,7 +345,7 @@ mod tests {
         );
     }
 
-    /// BUG-07, phase two: one tool that cannot be swapped is reported, and the
+    /// Phase two: one tool that cannot be swapped is reported, and the
     /// other five still land. Aborting at the first refusal — java is the
     /// first of the six — is what used to leave the store straddling two
     /// versions AND name only one of its problems.

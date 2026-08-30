@@ -57,7 +57,7 @@ enum Removal {
 /// Windows `PermissionDenied` (os error 5) is what BOTH a locked directory
 /// and an ACL denial raise, so that message names the two. The DELETE's error
 /// kind then decides whether a leftover is worth deferring to the sweep or is
-/// a failure of its own (BUG-12).
+/// a failure of its own.
 fn remove(dir: &Path, name: &str) -> Result<Removal, Fail> {
     remove_with(dir, name, |dir: &Path| fs::remove_dir_all(dir))
 }
@@ -84,7 +84,7 @@ fn remove_with(
             // exits. Something else — no space left to journal the delete, an
             // I/O error on the volume — is not waiting on any process, so
             // announcing it as "in use" sends the user hunting one that does
-            // not exist while the bytes stay put (BUG-12).
+            // not exist while the bytes stay put.
             Err(err) if file_ops::in_use(&err) => Ok(Removal::Deferred),
             Err(err) => Err(Fail::engine(Error::io("delete", &removing)(err))
                 .hint(format!("{name} was renamed aside before the delete failed"))),
@@ -189,7 +189,7 @@ mod tests {
         assert!(!removing.exists(), "a later sweep clears the leftover");
     }
 
-    /// BUG-12: a delete that failed for want of space is not "in use", and the
+    /// A delete that failed for want of space is not "in use", and the
     /// difference matters — the sweep this used to promise would refuse
     /// forever, while the user went looking for a process to close.
     #[test]

@@ -1,16 +1,15 @@
 # End-to-end runs against the real world: real releases, real network, a real
 # Windows registry (the runner is disposable) and the real package managers.
 #
-# WHAT RUNS ON A PULL REQUEST, and why not everything (CI-07). Exactly the
-# jobs whose outcome the working tree can change: `installer` and `update`
-# execute install.ps1, and `winget`/`scoop` execute packaging/. The two left
-# out — `oneliner` and `zip` — read nothing but published assets, so no pull
-# request can make them fail or pass differently; running them there would be
-# a check that cannot fail, which this repo has already decided is worse than
-# no check at all (TST-01). `source` is left out because it is the expensive
-# one, and the Rust it covers is driven on every pull request by `cargo test`
-# on Windows in ci.yml, against hermetic servers and a disposable registry
-# subkey.
+# WHAT RUNS ON A PULL REQUEST, and why not everything. Exactly the jobs whose
+# outcome the working tree can change: `installer` and `update` execute
+# install.ps1, and `winget`/`scoop` execute packaging/. The two left out —
+# `oneliner` and `zip` — read nothing but published assets, so no pull request
+# can make them fail or pass differently; running them there would be a check
+# that cannot fail, which this repo has already decided is worse than no check
+# at all. `source` is left out because it is the expensive one, and the Rust it
+# covers is driven on every pull request by `cargo test` on Windows in ci.yml,
+# against hermetic servers and a disposable registry subkey.
 #
 # WHAT THE INSTALL JOBS CANNOT PROVE. They install the LATEST RELEASE, not the
 # commit under test — that is what makes them cheap (no build) and what they
@@ -49,10 +48,13 @@ permissions:
   contents: read
 
 jobs:
-  # CI-06. The installer as the working tree holds it, against the latest real
-  # release, on a clean runner. This is the job whose absence let BUG-01 ride
-  # through three releases: e2e built from source and called `jdk setup`
-  # directly, so nothing ever ran the README's primary path before a user did.
+  # The installer as the working tree holds it, against the latest real
+  # release, on a clean runner. This is the job whose absence let a `jdk setup`
+  # that could not find its shim ride through three releases: nothing ever
+  # placed `jdk-shim.exe` in `<root>\bin`, where the installed jdk.exe looks
+  # for it. It went unseen because e2e built from source and called
+  # `jdk setup` directly, so nothing ever ran the README's primary path
+  # before a user did.
   installer:
     runs-on: windows-2025
     timeout-minutes: 30
@@ -90,12 +92,12 @@ jobs:
       - name: shim, junction, registry and doctor validations
         run: ./.github/scripts/e2e_validate.ps1 -Jdk "$env:JDK" -ExpectedArch amd64
 
-  # CI-06's other half: the one-liner the README opens with, verbatim, so the
-  # URL and the installer that URL serves are checked as a pair. Deliberately
-  # stops at `jdk doctor` — what happens after this point is the released
-  # jdk.exe doing its job, and `installer` above already drives those same
-  # bytes through a real JDK install. Repeating it here would buy a second
-  # 190 MB download and no second fact.
+  # The `installer` job's other half: the one-liner the README opens with,
+  # verbatim, so the URL and the installer that URL serves are checked as a
+  # pair. Deliberately stops at `jdk doctor` — what happens after this point is
+  # the released jdk.exe doing its job, and `installer` above already drives
+  # those same bytes through a real JDK install. Repeating it here would buy a
+  # second 190 MB download and no second fact.
   oneliner:
     if: github.event_name != 'pull_request'
     runs-on: windows-2025
@@ -126,7 +128,7 @@ jobs:
           & $jdk doctor
           if ($LASTEXITCODE -ne 0) { throw "jdk doctor exited $LASTEXITCODE" }
 
-  # CI-20, first channel. The release zip with nothing but Expand-Archive
+  # First install channel. The release zip with nothing but Expand-Archive
   # behind it. Its real subject is the archive LAYOUT: install.ps1 searches
   # recursively and would forgive a nested folder, while the winget manifest
   # names `RelativeFilePath: jdk.exe` at the root and would not. This is the
@@ -173,7 +175,7 @@ jobs:
       - name: what the channel has to deliver
         run: ./.github/scripts/e2e_channel.ps1 -Jdk "$env:JDK" -Version "$env:VERSION"
 
-  # CI-20, second channel. The manifest packaging/winget/ renders, installed
+  # Second install channel. The manifest packaging/winget/ renders, installed
   # by winget for real from a local manifest — the closest a runner gets to
   # `winget install isacgalvao.jdk` before winget-pkgs has accepted the
   # package. Rendering it is half the check: render.ps1 ends in `winget
@@ -252,7 +254,7 @@ jobs:
       - name: what the channel has to deliver
         run: ./.github/scripts/e2e_channel.ps1 -Jdk "$env:JDK" -Version "$env:VERSION"
 
-  # CI-20, third channel. jdk.json as packaging/scoop/render.ps1 writes it,
+  # Third install channel. jdk.json as packaging/scoop/render.ps1 writes it,
   # installed from a local file. The published route — `scoop install
   # <latest/download/jdk.json>`, which the README documents — only becomes
   # testable once a release carries that asset, and the first one to do so is
@@ -326,10 +328,10 @@ jobs:
       - name: what the channel has to deliver
         run: ./.github/scripts/e2e_channel.ps1 -Jdk "$env:JDK" -Version "$env:VERSION"
 
-  # CI-07. `jdk update` on an installation the real installer just made —
-  # against the real release host with the key compiled into the binary, then
-  # against a signed fake release on loopback that it actually swaps itself
-  # for. The script says which leg proves what and why neither is what
+  # `jdk update` on an installation the real installer just made — against the
+  # real release host with the key compiled into the binary, then against a
+  # signed fake release on loopback that it actually swaps itself for. The
+  # script says which leg proves what and why neither is what
   # crates/jdk/tests/update.rs already covers.
   update:
     runs-on: windows-2025
@@ -358,9 +360,8 @@ jobs:
   # The deep runtime job, and the only one that builds the commit under test:
   # a real Temurin through the shim, Maven picking up the registry JAVA_HOME,
   # and a Ctrl+C round-trip proving the shim's ignore does not desensitize the
-  # child JVM's shutdown hooks (M1 review follow-up). Nightly, or on demand —
-  # it is the expensive one, and ci.yml drives the same binaries on every pull
-  # request.
+  # child JVM's shutdown hooks. Nightly, or on demand — it is the expensive
+  # one, and ci.yml drives the same binaries on every pull request.
   source:
     if: github.event_name == 'schedule' || inputs.source
     strategy:

@@ -103,9 +103,9 @@ fn replace_existing(from: &Path, to: &Path) -> io::Result<()> {
 ///
 /// Every step that CAN succeed on a second try gets one: an antivirus holding
 /// a handle on a file this code just wrote refuses the rename with an
-/// [`in_use`] code, and the handle is gone milliseconds later (BUG-06). The
-/// first call is the exception, and deliberately so — its refusal is how a
-/// RUNNING destination announces itself, which waiting never cures, so it goes
+/// [`in_use`] code, and the handle is gone milliseconds later. The first call
+/// is the exception, and deliberately so — its refusal is how a RUNNING
+/// destination announces itself, which waiting never cures, so it goes
 /// straight to the rename-aside rather than charging every self-update the
 /// full [`RETRY_BUDGET`] for a call that cannot succeed while this process
 /// lives.
@@ -343,7 +343,7 @@ mod tests {
         assert!(!disk_full(&io::Error::from(io::ErrorKind::NotFound)));
     }
 
-    /// BUG-06: the swap that lands mid-scan used to be a hard failure, and on
+    /// The swap that lands mid-scan used to be a hard failure, and on
     /// a machine with real-time protection that is a coin toss on every
     /// update. Nothing is executing here — the refusal comes from a handle
     /// alone — so only the retry can make this succeed.
@@ -416,10 +416,11 @@ mod tests {
     /// tempting Windows "fix" for the ACCESS_DENIED a running image returns is
     /// to delete `dest` before renaming over it; with a staging that never
     /// arrived, that shortcut leaves the machine with no `jdk.exe` and no
-    /// aside to restore from — the bricked state BUG-04 was about. A missing
-    /// staging is the one reachable failure on both platforms (ERROR_FILE_NOT_FOUND
-    /// and ENOENT both surface as `NotFound`, never `PermissionDenied`), so it
-    /// takes the plain arm and may not touch `dest`.
+    /// aside to restore from — the same bricked state a crash inside the swap
+    /// window once produced. A missing staging is the one reachable failure on
+    /// both platforms (ERROR_FILE_NOT_FOUND and ENOENT both surface as
+    /// `NotFound`, never `PermissionDenied`), so it takes the plain arm and
+    /// may not touch `dest`.
     #[test]
     fn a_swap_that_cannot_run_leaves_the_destination_untouched() {
         let temp = TempDir::new().unwrap();

@@ -1,6 +1,6 @@
-//! Shim auto-install (plan decision 5): what a pinned-but-missing JDK does
-//! under each `auto-install` config value. The interactive TTY prompt path
-//! cannot be automated honestly (stdin AND stderr must be real consoles):
+//! Shim auto-install: what a pinned-but-missing JDK does under each
+//! `auto-install` config value. The interactive TTY prompt path cannot be
+//! automated honestly (stdin AND stderr must be real consoles):
 //! its accept/refuse parsing is unit-tested in the shim (`accepts`) and the
 //! interactive flow is a manual validation item. Everything else is covered
 //! here, including the whole `always` loop end to end: shim → `jdk.exe
@@ -68,7 +68,7 @@ fn always_installs_via_the_real_cli_and_runs_the_tool() {
     serve_catalog(&server, std::slice::from_ref(&pkg));
     server.route("/dl/t.zip", move |_| Response::ok(zip.clone()));
 
-    // Decision 7 layout: the shim looks for the CLI at <JDK_ROOT>\bin\jdk.exe.
+    // The store layout: the shim looks for the CLI at <JDK_ROOT>\bin\jdk.exe.
     let bin = sandbox.root.join("bin");
     fs::create_dir_all(&bin).unwrap();
     fs::copy(jdk_binary(), bin.join("jdk.exe")).unwrap();

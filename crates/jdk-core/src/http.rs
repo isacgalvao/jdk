@@ -296,10 +296,10 @@ impl Http {
 }
 
 /// One stderr line per retry, naming what failed and how long the pause will
-/// be (BUG-13). Announced from the FIRST retry — that is, only once an
-/// attempt has already failed — so a healthy request stays silent and a bad
-/// link stops looking like a hang. stderr, not the caller: the engine has no
-/// UI, and this is the one thing a progress bar cannot express.
+/// be. Announced from the FIRST retry — that is, only once an attempt has
+/// already failed — so a healthy request stays silent and a bad link stops
+/// looking like a hang. stderr, not the caller: the engine has no UI, and
+/// this is the one thing a progress bar cannot express.
 fn announce_retry(url: &str, attempt: u32, attempts: u32, wait: Duration, reason: impl Display) {
     eprintln!(
         "jdk: {url} failed ({reason}) — retrying in {:.0?} [attempt {} of {attempts}]",

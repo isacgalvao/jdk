@@ -126,9 +126,9 @@ fn serve_index_without(server: &Server) {
     serve_catalog(server, std::slice::from_ref(&other));
 }
 
-/// DEBT-07: a GA build resolved live says NOTHING. It is the banal case — a
-/// release the index has not picked up yet — and a line about it would land
-/// in the middle of every `java` that auto-installs one in CI.
+/// A GA build resolved live says NOTHING. It is the banal case — a release
+/// the index has not picked up yet — and a line about it would land in the
+/// middle of every `java` that auto-installs one in CI.
 #[test]
 fn a_live_ga_resolution_is_silent() {
     let server = Server::start();
@@ -147,11 +147,11 @@ fn a_live_ga_resolution_is_silent() {
     );
 }
 
-/// DEBT-07: an early-access build resolved live DOES say so, because there
-/// the fact is worth having — the index carries no build for that selector at
-/// all. The old message fired for both cases and claimed the download was
-/// "unverified against the index's pinned sha256", which was never true: the
-/// sha256 is mandatory on both paths.
+/// An early-access build resolved live DOES say so, because there the fact is
+/// worth having — the index carries no build for that selector at all. The
+/// old message fired for both cases and claimed the download was "unverified
+/// against the index's pinned sha256", which was never true: the sha256 is
+/// mandatory on both paths.
 #[test]
 fn a_live_early_access_resolution_says_so() {
     let server = Server::start();
@@ -236,7 +236,7 @@ fn bare_selector_installs_the_config_vendor() {
     assert!(world.candidate("zulu@21.0.5+11").exists());
 }
 
-/// D2: a line the catalog carries only as early access is refused for a
+/// A line the catalog carries only as early access is refused for a
 /// plain GA selector — no nightly arrives unannounced — and the refusal
 /// names the pre-release selector, which then installs it with no flag.
 #[test]
@@ -869,7 +869,7 @@ fn pin_file_with_bom_crlf_and_comment_resolves_successfully() {
     );
 }
 
-/// D4: Oracle's terms are not this tool's to accept on the user's behalf.
+/// Oracle's terms are not this tool's to accept on the user's behalf.
 /// Without consent the install stops before any download — the archive route
 /// is never touched — and the refusal names the flag that carries consent.
 /// A test harness has no console, which is the same position CI and the shim
@@ -901,9 +901,10 @@ fn a_proprietary_vendor_needs_consent_before_anything_is_downloaded() {
     assert!(!world.candidate("oracle@25.0.2").exists());
 }
 
-/// The other half of D4: the flag consents, and only then does the download
-/// carry the cookie by which Oracle records that acceptance — the mechanism
-/// that made an unattended install a problem in the first place.
+/// The other half of the license consent: the flag consents, and only then
+/// does the download carry the cookie by which Oracle records that
+/// acceptance — the mechanism that made an unattended install a problem in
+/// the first place.
 #[test]
 fn accept_license_consents_and_the_oracle_cookie_reaches_the_wire() {
     let server = Server::start();

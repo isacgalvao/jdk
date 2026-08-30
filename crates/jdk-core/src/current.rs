@@ -1,12 +1,11 @@
-//! The `<JDK_ROOT>\current` junction — the fixed path JAVA_HOME points at
-//! (decision 8). `jdk use` only retargets it; the JAVA_HOME value never
-//! changes, so consoles and IDEs already open see the switch immediately.
+//! The `<JDK_ROOT>\current` junction — the fixed path JAVA_HOME points at.
+//! `jdk use` only retargets it; the JAVA_HOME value never changes, so
+//! consoles and IDEs already open see the switch immediately.
 //!
 //! Retarget is ATOMIC: a staging junction is created next to `current` and
-//! swapped in with [`atomic_rename`] — never a remove → registry →
-//! recreate sequence (anti-model 2), whose interruption window leaves
-//! JAVA_HOME pointing at nothing. Junctions, not symlinks (anti-model 3):
-//! creating one needs no admin or Developer Mode.
+//! swapped in with [`atomic_rename`] — never a remove → registry → recreate
+//! sequence, whose interruption window leaves JAVA_HOME pointing at nothing.
+//! Junctions, not symlinks: creating one needs no admin or Developer Mode.
 
 use crate::error::{Error, Result};
 use crate::file_ops::atomic_rename;
@@ -128,7 +127,7 @@ mod tests {
         let jdk_b = candidate(temp.path(), "temurin@21.0.5");
         retarget(temp.path(), &jdk_a).unwrap();
 
-        // The heart of the milestone: the swap must succeed OVER an existing
+        // The heart of the retarget: the swap must succeed OVER an existing
         // junction (MoveFileExW REPLACE_EXISTING on a reparse point).
         retarget(temp.path(), &jdk_b).unwrap();
 

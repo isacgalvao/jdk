@@ -40,8 +40,8 @@
 //! The listing endpoint carries no checksum at all, so every listed package
 //! costs one `ids/<id>` call — fanned out over `jobs` scoped threads feeding
 //! a channel. A failed detail CALL aborts the run (dropping it would
-//! silently shrink the index — anti-model 7); a package that finishes the
-//! chain without a sha256 is dropped with a counted warning.
+//! silently shrink the index); a package that finishes the chain without a
+//! sha256 is dropped with a counted warning.
 //!
 //! The two listing queries do NOT carry the same weight: a failed GA query
 //! propagates, leaving the required/best-effort verdict to `main`, while a

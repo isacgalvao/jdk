@@ -1,4 +1,4 @@
-//! One error enum for the whole engine, message-first; the CLI (M3) maps
+//! One error enum for the whole engine, message-first; the CLI maps
 //! variants onto the exit-code contract in `jdk_resolve::exit`.
 
 use std::io;

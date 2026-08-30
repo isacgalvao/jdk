@@ -144,7 +144,7 @@ fn update_swaps_the_running_store_copy_and_rewrites_the_shims() {
             tool.name
         );
     }
-    // BUG-01: the bundle's shim stays in `bin` after the staging is gone, so
+    // The bundle's shim stays in `bin` after the staging is gone, so
     // the `jdk setup` doctor recommends still has a source to materialize from.
     assert_eq!(
         fs::read(world.root.join("bin").join("jdk-shim.exe")).unwrap(),
@@ -157,15 +157,15 @@ fn update_swaps_the_running_store_copy_and_rewrites_the_shims() {
     );
     let message = stderr(&output);
     assert!(message.contains(&format!("{LOCAL} → 9.9.9")), "{message}");
-    // BUG-08: the version just left is named with the only command that
-    // installs a specific one — the `.old` aside is swept by the next run.
+    // The version just left is named with the only command that installs a
+    // specific one — the `.old` aside is swept by the next run.
     assert!(
         message.contains(&format!("install.ps1 -Version {LOCAL}")),
         "the way back is named where the version changed: {message}"
     );
     assert!(
         !message.contains("retrying"),
-        "BUG-13's announcement must stay out of a healthy run: {message}"
+        "the retry announcement must stay out of a healthy run: {message}"
     );
     assert!(
         !world.root.join("cache").join("update").exists(),
@@ -173,8 +173,8 @@ fn update_swaps_the_running_store_copy_and_rewrites_the_shims() {
     );
 }
 
-/// BUG-13: on a bad link the retry schedule used to look like a hang. One
-/// line per retry, on stderr, from the first one — and only from the first
+/// On a bad link the retry schedule used to look like a hang. One line per
+/// retry, on stderr, from the first one — and only from the first
 /// one, which is what [`update_swaps_the_running_store_copy_and_rewrites_the_shims`]
 /// pins from the other side by staying silent.
 #[test]
@@ -236,9 +236,9 @@ fn update_skips_when_already_on_the_latest_release() {
     );
 }
 
-/// BUG-08: running ABOVE the latest release is the one skip where the user
-/// may well want to move — downwards. Nothing in `jdk update` installs a
-/// named version, so the skip has to say what does.
+/// Running ABOVE the latest release is the one skip where the user may well
+/// want to move — downwards. Nothing in `jdk update` installs a named
+/// version, so the skip has to say what does.
 #[test]
 fn update_skipped_from_ahead_of_the_latest_names_the_way_back() {
     let server = Server::start();
@@ -299,10 +299,10 @@ fn a_corrupt_release_hash_blocks_before_touching_the_store() {
     assert!(!world.root.join("bin").join("jdk.exe.old").exists());
 }
 
-/// SEC-01 end to end: a release host that hands out a payload of its choosing
-/// cannot make the updater install it, because it cannot produce a signature
-/// for the sums that describe it. This is the scenario the whole anchor
-/// exists for — the update path replaces the binary every shim invokes.
+/// The signed anchor end to end: a release host that hands out a payload of
+/// its choosing cannot make the updater install it, because it cannot produce
+/// a signature for the sums that describe it. This is the scenario the whole
+/// anchor exists for — the update path replaces the binary every shim invokes.
 #[test]
 fn a_release_whose_sums_were_edited_after_signing_never_reaches_the_store() {
     let server = Server::start();
@@ -372,8 +372,8 @@ fn update_refuses_a_release_with_no_signature() {
 }
 
 /// The zip is published and signed for, but the signed sums cover another
-/// release's asset — BUG-09's replay shape, since the asset name carries the
-/// version the updater was promised.
+/// release's asset — the shape a replay of an older release takes, since the
+/// asset name carries the version the updater was promised.
 #[test]
 fn update_refuses_a_zip_the_signed_sums_do_not_cover() {
     let server = Server::start();
@@ -395,7 +395,7 @@ fn update_refuses_a_zip_the_signed_sums_do_not_cover() {
     assert_eq!(fs::read(&exe).unwrap(), before, "bin\\jdk.exe is untouched");
 }
 
-/// BUG-10: the update extracts with bundle-sized ceilings, not the 4 GiB and
+/// The update extracts with bundle-sized ceilings, not the 4 GiB and
 /// 200k entries a real JDK needs. The signature verifies and the hash matches
 /// — the archive is simply not shaped like a release bundle — so with the old
 /// `extract_zip` this installs cleanly and the test fails by SUCCEEDING.

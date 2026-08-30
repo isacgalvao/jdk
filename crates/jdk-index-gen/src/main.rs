@@ -37,8 +37,8 @@ const VENDORS: [&str; 7] = [
     "oracle",
 ];
 
-/// The subset the index MUST cover (decision 6): each must yield at least one
-/// windows-x64 package or the run fails. Vendors in [`VENDORS`] but not here
+/// The subset the index MUST cover: each must yield at least one windows-x64
+/// package or the run fails. Vendors in [`VENDORS`] but not here
 /// are best-effort — fetched, but their absence only warns (Oracle's checksum
 /// path is more fragile, and one vendor's outage must not block the daily
 /// publish of the rest).

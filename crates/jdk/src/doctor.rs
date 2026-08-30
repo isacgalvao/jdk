@@ -1,8 +1,8 @@
 //! `jdk doctor`: one named check per way the Windows integration can rot,
-//! each with a ✓/✗/! verdict and its remediation, extended with the
-//! anti-model catalog this project was built against (setx truncation,
-//! literal %VAR% in REG_SZ, orphan JAVA_HOME, machine/user scope conflict,
-//! duplicated PATH entries).
+//! each with a ✓/✗/! verdict and its remediation, extended with the failure
+//! modes of the Windows version managers this one was built against (setx
+//! truncation, literal %VAR% in REG_SZ, orphan JAVA_HOME, machine/user scope
+//! conflict, duplicated PATH entries).
 //!
 //! Exit contract: any ✗ exits non-zero; `!` findings are informative
 //! (offline is not a disease) and keep exit 0.
@@ -468,7 +468,7 @@ fn index_reachable() -> Check {
 }
 
 /// The verdict on an index.json that answered 200 — which is not yet an
-/// index (IDX-06). A published index this client cannot read is not silence:
+/// index. A published index this client cannot read is not silence:
 /// the catalog falls through to the live foojay API and installs keep
 /// working, so it reads as a note pointing at `jdk update`, the stance
 /// [`update_available`] already takes for a world that moved ahead of this
@@ -536,7 +536,7 @@ fn cache_integrity(root: &Path) -> Check {
     };
     // Schema skew before corruption: the cached file is intact, this client
     // is the one that cannot read it, and re-downloading would only fetch the
-    // same version again (IDX-06).
+    // same version again.
     if let Some(found) = schema_skew(&bytes) {
         return note(
             "cache",
@@ -622,13 +622,14 @@ fn cli_copy(root: &Path) -> Check {
 }
 
 /// The `bin\jdk-shim.exe` every later `jdk setup` copies the shims from, and
-/// whether the materialized set still matches it (BUG-15). `setup` resolves
-/// its source as a sibling of the running jdk.exe, so the store copy has
-/// nothing to materialize from once this one is gone — the recovery path
-/// BUG-01 restored — and a copy that disagrees with the shims means the next
-/// `setup` hands out a different build than the one in use, which is exactly
-/// the state a partially refused materialization leaves behind. Shims that
-/// are MISSING are not counted here: `shims` above owns that verdict.
+/// whether the materialized set still matches it. `setup` resolves its source
+/// as a sibling of the running jdk.exe, so the store copy has nothing to
+/// materialize from once this one is gone — the recovery path `jdk setup`
+/// only regained when the installer began placing the shim there — and a copy
+/// that disagrees with the shims means the next `setup` hands out a different
+/// build than the one in use, which is exactly the state a partially refused
+/// materialization leaves behind. Shims that are MISSING are not counted
+/// here: `shims` above owns that verdict.
 fn shim_source(root: &Path) -> Check {
     let source = root.join("bin").join("jdk-shim.exe");
     if !source.exists() {

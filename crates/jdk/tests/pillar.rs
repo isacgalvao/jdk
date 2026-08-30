@@ -1,4 +1,4 @@
-//! The M4 acceptance suite (the Windows pillar), fully hermetic. GOLDEN
+//! The acceptance suite for the Windows pillar, fully hermetic. GOLDEN
 //! RULE: no test touches the real `HKCU\Environment`, the real PATH, or
 //! broadcasts a real WM_SETTINGCHANGE — every registry operation goes to a
 //! disposable `HKCU\Software\jdk-test-*` subkey injected into the binary via
@@ -147,7 +147,7 @@ fn setup_provisions_shims_registry_and_junction_then_reruns_as_a_no_op() {
         let copy = fs::read(world.root.join("shims").join(format!("{tool}.exe"))).unwrap();
         assert!(copy == shim_payload, "{tool}.exe must be byte-identical");
     }
-    // The CLI itself lands in the store (decision 7 layout).
+    // The CLI itself lands in the store layout.
     let stored_cli = fs::read(world.root.join("bin").join("jdk.exe")).unwrap();
     assert!(
         stored_cli == cli_payload,
@@ -156,7 +156,7 @@ fn setup_provisions_shims_registry_and_junction_then_reruns_as_a_no_op() {
     // JAVA_HOME: the junction path, REG_SZ, in the DISPOSABLE key.
     let java_home = env::read(&world.user.key, "JAVA_HOME").unwrap().unwrap();
     assert_eq!(java_home.text, world.root.join("current").to_string_lossy());
-    assert!(!java_home.expandable, "decision 8: absolute path as REG_SZ");
+    assert!(!java_home.expandable, "absolute path as REG_SZ");
     // PATH: shims then bin prepended once each, original text and
     // REG_EXPAND_SZ type preserved.
     let path = env::read(&world.user.key, "Path").unwrap().unwrap();
@@ -213,7 +213,7 @@ fn setup_provisions_shims_registry_and_junction_then_reruns_as_a_no_op() {
     );
 }
 
-/// BUG-01: every other test injects `--shim-source`, which is exactly why the
+/// Every other test injects `--shim-source`, which is exactly why the
 /// installed layout stayed broken unnoticed. Here setup resolves the shim the
 /// way a real install does — next to the running jdk.exe — first from a bundle
 /// directory that then disappears, and again from `<root>\bin\jdk.exe`, where
@@ -306,7 +306,7 @@ fn setup_refuses_a_foreign_java_home_without_consent_and_backs_it_up_with_yes() 
     assert!(backup.expandable, "the registry TYPE is part of the backup");
 }
 
-/// FEAT-01, end to end with the real binaries: the undo has to be the exact
+/// `setup --undo` end to end with the real binaries: it has to be the exact
 /// inverse of the setup that ran before it — same registry VALUE, same TYPE,
 /// same bytes for every PATH entry that was never jdk's — and it has to stop
 /// there, because nobody asked for the JDKs to go.
@@ -427,7 +427,7 @@ fn setup_undo_from_the_store_binary_names_the_copy_it_could_not_delete() {
     );
 }
 
-/// H1: the purge that matters is the one run from `bin\jdk.exe`, because that
+/// The purge that matters is the one run from `bin\jdk.exe`, because that
 /// is the copy setup puts on the PATH. Its own aside makes `bin\` undeletable,
 /// and a single `remove_dir_all(root)` aborts on it — silently keeping the
 /// JDKs, the cache and the config while reporting a purge.
@@ -483,7 +483,7 @@ fn setup_undo_purge_from_the_store_binary_still_takes_the_jdks() {
     );
 }
 
-/// M3: two setups with JAVA_HOME deleted in between. The backup the first one
+/// Two setups with JAVA_HOME deleted in between. The backup the first one
 /// took describes a value the SECOND setup did not displace — the user removed
 /// it on purpose — so the undo must not bring it back.
 #[test]
@@ -844,7 +844,7 @@ fn doctor_names_a_path_missing_the_shims_entry() {
 fn doctor_names_a_path_missing_the_bin_entry() {
     let world = healthy();
     // Shims present, bin gone: every java tool works but `jdk` itself
-    // vanishes from new shells — the M6 product gap this check guards.
+    // vanishes from new shells — the product gap this check guards.
     world
         .user
         .key
@@ -1001,7 +1001,7 @@ fn doctor_names_a_corrupt_cache() {
     assert_broken(&world, "cache", "sha256 mismatch", "re-downloads");
 }
 
-/// IDX-06: a cached index from a newer schema is not corruption — the file is
+/// A cached index from a newer schema is not corruption — the file is
 /// intact and this client is the one that cannot read it, so deleting the
 /// cache would fetch the same version again. The remedy is a newer client,
 /// and the catalog keeps working through foojay meanwhile: a note, not a ✗.
@@ -1026,7 +1026,7 @@ fn doctor_notes_a_cached_index_from_a_newer_schema() {
     assert!(line.contains("jdk update"), "{line}");
 }
 
-/// IDX-06: the same skew seen live, before anything is cached — otherwise the
+/// The same skew seen live, before anything is cached — otherwise the
 /// doctor reports a reachable index while every install silently falls back
 /// to the live API.
 #[test]
@@ -1048,8 +1048,8 @@ fn doctor_notes_a_published_index_from_a_newer_schema() {
     assert!(line.contains("jdk update"), "{line}");
 }
 
-/// BUG-15: `setup` materializes the shims from a `jdk-shim.exe` beside the
-/// running jdk.exe. Run AS the store copy — the jdk.exe every remedy tells
+/// `setup` materializes the shims from a `jdk-shim.exe` beside the running
+/// jdk.exe. Run AS the store copy — the jdk.exe every remedy tells
 /// the user to run — a missing `bin\jdk-shim.exe` is that repair path broken,
 /// and the way out is offered cheapest first: every materialized shim is a
 /// byte-identical copy of the source, so one of them hands it back offline.
@@ -1091,7 +1091,7 @@ fn doctor_reads_a_pending_shim_source_as_pending_not_broken() {
     );
 }
 
-/// BUG-15: a shim that cannot be READ is neither a match nor a mismatch, and
+/// A shim that cannot be READ is neither a match nor a mismatch, and
 /// claiming either would be the check speaking about what it never saw. A
 /// directory wearing the name is the cheapest way to produce one — and a
 /// state the update sweep already has to survive.
@@ -1114,7 +1114,7 @@ fn doctor_notes_a_shim_it_cannot_read() {
     assert!(line.contains("javac"), "{line}");
 }
 
-/// IDX-06: a 200 is not an index. A captive portal's login page is the shape
+/// A 200 is not an index. A captive portal's login page is the shape
 /// this meets in the wild, and calling it reachable would hide every install
 /// falling through to the live API.
 #[test]
@@ -1133,9 +1133,9 @@ fn doctor_notes_an_index_url_answering_something_else() {
     assert!(line.contains("not an index.json"), "{line}");
 }
 
-/// BUG-15: the same source present but disagreeing with what was
-/// materialized — what a partially refused swap leaves behind, and what makes
-/// the next `jdk setup` hand out a build other than the one in use.
+/// The same source present but disagreeing with what was materialized — what
+/// a partially refused swap leaves behind, and what makes the next
+/// `jdk setup` hand out a build other than the one in use.
 #[test]
 fn doctor_names_shims_that_no_longer_match_the_bin_shim() {
     let world = healthy();

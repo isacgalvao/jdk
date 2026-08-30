@@ -2,10 +2,10 @@
 //!
 //! ```text
 //! <root>\candidates\java\<vendor@version>\   installed JDKs
-//! <root>\shims\                              copies of jdk-shim.exe (M4)
-//! <root>\current                             junction JAVA_HOME points at (M4)
-//! <root>\config.toml                         CLI config (M3)
-//! <root>\cache\                              catalog cache (M2)
+//! <root>\shims\                              copies of jdk-shim.exe
+//! <root>\current                             junction JAVA_HOME points at
+//! <root>\config.toml                         CLI config
+//! <root>\cache\                              catalog cache
 //! ```
 
 use crate::selector::{Selector, normalize_vendor};
@@ -58,7 +58,7 @@ pub struct Candidate {
 
 /// Every installed JDK under `candidates\java`, sorted by vendor then
 /// version. Entries that are not directories named `vendor@version` are
-/// skipped silently — `jdk doctor` reports them (M4). A missing candidates
+/// skipped silently — `jdk doctor` reports them. A missing candidates
 /// directory means nothing is installed.
 pub fn installed(root: &Path) -> io::Result<Vec<Candidate>> {
     let entries = match std::fs::read_dir(java_candidates(root)) {

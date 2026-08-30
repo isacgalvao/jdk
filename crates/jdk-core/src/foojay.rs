@@ -115,9 +115,10 @@ pub fn find(
             continue;
         }
         let status = release_status(pkg.release_status.as_deref());
-        // The GA-only query already says this, but D2 is a rule about what
-        // may be installed, not about what a remote endpoint chose to honor:
-        // an EA build never satisfies a selector that did not name one.
+        // The GA-only query already says this, but early access being opt-in
+        // per selector is a rule about what may be installed, not about what a
+        // remote endpoint chose to honor: an EA build never satisfies a
+        // selector that did not name one.
         if status == ReleaseStatus::Ea && pattern.pre_release.is_none() {
             continue;
         }

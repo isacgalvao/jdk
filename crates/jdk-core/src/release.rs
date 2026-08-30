@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(sum_for(&sums, "jdk-v9.9.9-windows-x64.zip").unwrap(), hash);
         assert_eq!(sum_for(&sums, "install.ps1").unwrap(), hash);
 
-        // BUG-09: the asset name carries the version, so a SHA256SUMS signed
+        // The asset name carries the version, so a SHA256SUMS signed
         // for another release covers no line the updater will ask for.
         assert!(sum_for(&sums, "jdk-v9.9.8-windows-x64.zip").is_none());
         assert!(sum_for(&sums, "windows-x64.zip").is_none(), "not a suffix");
