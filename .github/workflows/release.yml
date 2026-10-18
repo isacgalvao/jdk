@@ -95,7 +95,7 @@ jobs:
       # cargo-auditable embeds the dependency SBOM in jdk.exe, so what shipped
       # can be matched against an advisory later, off this pipeline entirely.
       - name: install cargo-auditable
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad  # v2
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8  # v2
         with:
           tool: cargo-auditable
 
