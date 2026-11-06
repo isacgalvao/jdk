@@ -17,6 +17,7 @@ use jdk_resolve::config::Config;
 use jdk_resolve::exit;
 use jdk_resolve::store::{self, Candidate};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 pub fn run(root: &Path, yes: bool, shim_source: Option<&Path>) -> Result<(), Fail> {
@@ -96,7 +97,12 @@ fn apply(
 fn materialize_shims(root: &Path, shim_source: Option<&Path>) -> Result<PathBuf, Fail> {
     let source = match shim_source {
         Some(path) => path.to_path_buf(),
-        None => sibling("jdk-shim.exe")?,
+        None => beside_me("jdk-shim.exe").map_err(|err| {
+            Fail::new(
+                exit::FAILURE,
+                format!("cannot locate jdk.exe itself: {err}"),
+            )
+        })?,
     };
     if !source.exists() {
         return Err(Fail::new(
@@ -128,14 +134,25 @@ fn materialize_shims(root: &Path, shim_source: Option<&Path>) -> Result<PathBuf,
     Ok(source)
 }
 
-fn sibling(name: &str) -> Result<PathBuf, Fail> {
-    let me = std::env::current_exe().map_err(|err| {
-        Fail::new(
-            exit::FAILURE,
-            format!("cannot locate jdk.exe itself: {err}"),
-        )
-    })?;
-    Ok(me.with_file_name(name))
+/// `name` beside the jdk.exe that is running, which is where a release zip
+/// puts jdk-shim.exe. `current_exe` reports the path the process was started
+/// by, so under winget it is the `Links\jdk.exe` symlink on PATH, while the
+/// zip was extracted beside the link's target in the package directory.
+pub(crate) fn beside_me(name: &str) -> io::Result<PathBuf> {
+    Ok(follow_link(std::env::current_exe()?).with_file_name(name))
+}
+
+/// One level of symlink, which is all winget makes; a chain the user builds
+/// on top of it is left out on purpose. Not `fs::canonicalize`: that returns a
+/// `\\?\` path, which would surface in every message that names the shim
+/// source.
+fn follow_link(path: PathBuf) -> PathBuf {
+    match fs::read_link(&path) {
+        // A relative target is relative to the link's directory (and keeps
+        // its `..` in messages); joining an absolute one yields it unchanged.
+        Ok(target) => path.parent().unwrap_or(Path::new("")).join(target),
+        Err(_) => path,
+    }
 }
 
 /// Fills `<root>\bin\` with the pair the installed layout needs: jdk.exe,
@@ -334,6 +351,69 @@ mod tests {
         let source = temp.path().join("jdk-shim.exe");
         fs::write(&source, b"fake shim payload").unwrap();
         source
+    }
+
+    /// winget's layout: the release zip extracted into a package directory,
+    /// and only a `jdk.exe` symlink in `Links`. Creating a symlink needs admin
+    /// or Developer Mode; without either the test can only say so (visible
+    /// with `--nocapture`, since a passing test's output is captured), except
+    /// on GitHub Actions (admin), where it must run rather than pass unseen.
+    fn winget_layout(temp: &TempDir, target: &Path) -> Option<PathBuf> {
+        let links = temp.path().join("Links");
+        fs::create_dir_all(&links).unwrap();
+        let link = links.join("jdk.exe");
+        match std::os::windows::fs::symlink_file(target, &link) {
+            Ok(()) => Some(link),
+            Err(err) if std::env::var_os("GITHUB_ACTIONS").is_none() => {
+                eprintln!("skipped: cannot create a symlink here ({err})");
+                None
+            }
+            Err(err) => panic!("GitHub Actions runs as admin, symlink failed: {err}"),
+        }
+    }
+
+    fn package(temp: &TempDir) -> PathBuf {
+        let pkg = temp.path().join("Packages").join("isacgalvao.jdk");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("jdk.exe"), b"exe").unwrap();
+        fs::write(pkg.join("jdk-shim.exe"), b"shim").unwrap();
+        pkg
+    }
+
+    #[test]
+    fn follows_an_absolute_link_to_where_the_zip_was_extracted() {
+        let temp = TempDir::new().unwrap();
+        let pkg = package(&temp);
+        let Some(link) = winget_layout(&temp, &pkg.join("jdk.exe")) else {
+            return;
+        };
+        let shim = follow_link(link).with_file_name("jdk-shim.exe");
+        assert_eq!(shim, pkg.join("jdk-shim.exe"));
+        assert!(shim.is_file());
+    }
+
+    #[test]
+    fn follows_a_relative_link_from_the_link_directory() {
+        let temp = TempDir::new().unwrap();
+        package(&temp);
+        let relative = Path::new(r"..\Packages\isacgalvao.jdk\jdk.exe");
+        let Some(link) = winget_layout(&temp, relative) else {
+            return;
+        };
+        let shim = follow_link(link).with_file_name("jdk-shim.exe");
+        assert!(
+            shim.is_file(),
+            "{} should be the package's shim",
+            shim.display()
+        );
+        assert_eq!(fs::read(shim).unwrap(), b"shim");
+    }
+
+    #[test]
+    fn a_plain_file_is_its_own_location() {
+        let temp = TempDir::new().unwrap();
+        let exe = package(&temp).join("jdk.exe");
+        assert_eq!(follow_link(exe.clone()), exe);
     }
 
     /// The broadcast contract, asserted on an injected fake: exactly one

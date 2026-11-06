@@ -8,7 +8,11 @@ ReleaseDate: __RELEASE_DATE__
 # The release zip is the payload, and winget extracts ALL of it into the
 # package directory - jdk.exe, jdk-shim.exe, LICENSE and README.md alike - so
 # `jdk setup` finds the jdk-shim.exe it materializes the shims from sitting
-# next to the jdk.exe it runs. NestedInstallerFiles is not that list: it is
+# next to the jdk.exe it runs. That jdk.exe is the package's, not the Links
+# symlink the user typed: setup follows the link first (setup::beside_me),
+# and without that it looks in Links and fails.
+#
+# NestedInstallerFiles is not that list: it is
 # the set of files that also get a symlink in the Links directory on PATH,
 # named by PortableCommandAlias or, when there is none, by the file name
 # (winget-cli, Workflows/PortableFlow.cpp - one loop over the extracted

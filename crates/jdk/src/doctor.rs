@@ -699,10 +699,9 @@ fn shim_source(root: &Path) -> Check {
 /// materialized shim IS a byte-identical copy of the source, so one of them
 /// hands `setup` its source back without a download.
 fn absent_shim_source(source: &Path, root: &Path) -> Check {
-    let beside_me = std::env::current_exe()
-        .map(|me| me.with_file_name("jdk-shim.exe"))
+    let shim_beside_me = crate::setup::beside_me("jdk-shim.exe")
         .is_ok_and(|shim| fs::metadata(shim).is_ok_and(|meta| meta.is_file()));
-    if beside_me {
+    if shim_beside_me {
         return note(
             "jdk-shim.exe",
             format!(
