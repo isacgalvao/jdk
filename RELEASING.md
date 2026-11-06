@@ -301,7 +301,7 @@ Edit the template when the description, the notes or the `autoupdate` block
 should change. `render.ps1` beside it shows what a release would publish:
 
 ```powershell
-./packaging/scoop/render.ps1 -Version 0.6.0 -OutFile jdk.json `
+./packaging/scoop/render.ps1 -Version 0.6.1 -OutFile jdk.json `
   -X64Sha256 <hash> -Arm64Sha256 <hash>
 ```
 
@@ -315,24 +315,25 @@ from, so the first one goes by hand, once:
 2. Render the manifest for a **published** release and validate it:
 
    ```powershell
-   ./packaging/winget/render.ps1 -Tag v0.6.0 `
-     -OutDir <winget-pkgs>\manifests\i\isacgalvao\jdk\0.6.0
+   ./packaging/winget/render.ps1 -Tag v0.6.1 `
+     -OutDir <winget-pkgs>\manifests\i\isacgalvao\jdk\0.6.1
    ```
 
    It takes the hashes from that release's **signed** `SHA256SUMS` and runs
-   `winget validate` on what it wrote.
+   `winget validate` on what it wrote. Not v0.6.0: its `jdk setup` looks for
+   `jdk-shim.exe` beside winget's `Links` symlink instead of the package, and
+   fails on every winget install.
 3. Open the pull request from the fork — one version per pull request.
 4. Once it is merged, create the repository secret **`WINGET_TOKEN`**: a
    **classic** personal access token scoped `public_repo`. A fine-grained token
    cannot open a pull request against a repository the account neither owns nor
    belongs to. From the next tag on, the `winget` job does the rest.
-5. Take the pending wording out of the README — **both halves of it**. The
-   "Built and waiting on someone else" paragraph in the Roadmap goes, and the
-   Install section's winget entry loses its condition, becoming just the
-   command. Each exists to keep the README true while the package is pending
-   and is false the moment it is not; leaving only one behind points a reader
-   at an anchor that no longer says anything, and talks them out of a command
-   that works.
+5. Document the channel in the README's Install section. The README does not
+   offer winget or scoop while the packaging is on hold, so the install
+   command, the `jdk setup` step it needs afterwards and the `jdk setup --undo`
+   before uninstalling all go in once the package is live. Before that, a
+   README pointing at `winget install` talks a reader into a command that
+   finds nothing.
 
 In that order. Until the secret exists the job skips with a notice, and until
 the pull request is merged `winget install isacgalvao.jdk` finds no package —
