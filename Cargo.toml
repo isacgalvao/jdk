@@ -54,7 +54,7 @@ sha2 = "0.11"
 # JDK archives and release bundles. `default-features = false` keeps out the
 # compression backends nothing here produces or reads; deflate is what the
 # vendors ship and what Compress-Archive writes.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # Argument parsing for the two binaries that take arguments (the shim parses
 # nothing — it forwards).
 clap = { version = "4", features = ["derive"] }

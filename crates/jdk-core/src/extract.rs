@@ -61,7 +61,10 @@ pub fn extract_zip_capped(
         let mut entry = zip
             .by_index(i)
             .map_err(|err| Error::Extract(format!("{}: entry {i}: {err}", archive.display())))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|err| Error::Extract(format!("{}: entry {i}: {err}", archive.display())))?
+            .into_owned();
         let rel = entry_rel_path(&name)?;
         let out = dest.join(&rel);
 
@@ -97,13 +100,25 @@ pub fn extract_zip_capped(
 
         let mut out_file = File::create(&out).map_err(Error::io("create", &out))?;
         let budget = max_bytes.saturating_sub(written).saturating_add(1);
-        let copied = io::copy(&mut (&mut entry).take(budget), &mut out_file)
-            .map_err(|err| Error::Extract(format!("{name}: {err}")))?;
-        written += copied;
-        if written > max_bytes {
+        // A failed copy (zip >= 9 itself rejects an entry that outgrows its
+        // declared size) and the actual-bytes cap both leave a partial file
+        // behind, so both remove it. With zip >= 9 the cap is unreachable for
+        // archive reads; it stays so the bound does not depend on zip.
+        let outcome = match io::copy(&mut (&mut entry).take(budget), &mut out_file) {
+            Err(err) => Err(Error::Extract(format!("{name}: {err}"))),
+            Ok(copied) => {
+                written += copied;
+                if written > max_bytes {
+                    Err(zip_bomb(archive, max_bytes, "uncompressed content"))
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        if let Err(err) = outcome {
             drop(out_file);
             let _ = fs::remove_file(&out);
-            return Err(zip_bomb(archive, max_bytes, "uncompressed content"));
+            return Err(err);
         }
         report.files += 1;
     }
@@ -112,7 +127,8 @@ pub fn extract_zip_capped(
 
 /// `what` names which guard tripped — `"declared uncompressed size"` for the
 /// per-entry early abort, `"uncompressed content"` for the running total after
-/// `io::copy` — so the two branches are distinguishable in logs and in tests.
+/// `io::copy` — so the two branches are distinguishable in logs. Only the
+/// first has a test: since zip 9 the reader fails before the second can trip.
 fn zip_bomb(archive: &Path, cap: u64, what: &str) -> Error {
     Error::Extract(format!(
         "{}: {what} exceeds the {cap}-byte ceiling (zip bomb?)",
@@ -319,8 +335,8 @@ mod tests {
     /// A zip whose single DEFLATEd entry decompresses to `real_len` bytes but
     /// whose local AND central uncompressed-size fields lie and claim only
     /// `declared` — decompression itself is governed by the deflate stream,
-    /// not by that metadata, so a reader trusting only the declared size is
-    /// fooled while the real byte count still flows through on read.
+    /// not by that metadata, so only a reader that counts the actual bytes
+    /// notices.
     fn zip_with_a_lying_declared_size(real_len: usize, declared: u32) -> Vec<u8> {
         let mut cursor = std::io::Cursor::new(Vec::new());
         {
@@ -340,9 +356,9 @@ mod tests {
     /// The declared-size short-circuit (`entry.size()` from the central
     /// directory) only catches a bomb that is honest about its own size.
     /// Here the header lies small while the deflate stream really decodes to
-    /// more than the cap, so the pre-check passes and only the running
-    /// `written` total accumulated by `io::copy` catches it — the branch
-    /// `caps_total_uncompressed_size` above never reaches.
+    /// more than the cap, so the pre-check passes and the lie is only caught
+    /// while reading: by zip itself (>= 9) or by the crate's running `written`
+    /// cap. Either way no partial file may be left behind.
     #[test]
     fn caps_total_uncompressed_size_when_the_declared_size_lies() {
         let temp = TempDir::new().unwrap();
@@ -352,15 +368,14 @@ mod tests {
         let dest = temp.path().join("out");
         let err = extract_zip_capped(&archive, &dest, 1000, MAX_ENTRIES).unwrap_err();
 
-        // The message is branch-specific: "uncompressed content" is ONLY the
-        // post-`io::copy` total guard. If a future `zip` release routed this
-        // write through a data descriptor (zeroing the local header size we
-        // patched) the declared-size pre-check would trip instead — its
-        // "declared uncompressed size" message would fail this assertion loudly
-        // rather than let the test pass while covering the weaker branch.
+        // Positive on purpose: if a future zip rejected this archive before
+        // the output file exists, the cleanup assertion below would pass
+        // without exercising anything, so this one must fail loudly instead.
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("uncompressed content"),
-            "expected the actual-bytes guard, got: {err}"
+            msg.contains("larger than its declared uncompressed size") // zip >= 9
+                || msg.contains("uncompressed content"), // the crate's own cap
+            "the lie must be caught while reading: {err}"
         );
         assert!(
             !dest.join("bomb.bin").exists(),
