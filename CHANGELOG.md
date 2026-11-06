@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-06
+
+A maintenance release: dependency updates for a batch of security advisories,
+and a handful of fixes.
+
+### Fixed
+
+- IBM Semeru downloads resolve: their GitHub organization was missing from the
+  hosts jdk trusts for JDK downloads.
+- `install.ps1` refuses 32-bit ARM Windows instead of installing an arm64
+  binary that cannot run there.
+- `jdk update` cleans up leftover `jdk.exe.old` and `jdk.exe.new` files whatever
+  their letter case on disk.
+- A JDK archive whose entry turns out larger than it declares no longer leaves a
+  truncated file behind when extraction aborts.
+
+### Security
+
+- TLS: rustls 0.23.46 (RUSTSEC-2026-0346 to 0349), rustls-webpki 0.103.16
+  (RUSTSEC-2026-0382, certificate chains through distrusted intermediates) and
+  webpki-roots 1.0.11 (RUSTSEC-2026-0381, distrusted emSign roots).
+- zip 9 (RUSTSEC-2026-0367, 0368, 0369 and 0429). All four advisories are in the
+  library's own `extract` functions, which jdk does not call: it extracts entry
+  by entry with its own path, symlink and size checks. The update keeps the
+  dependency on a maintained line.
+
 ## [0.6.0] - 2026-07-29
 
 A release about proof and reversibility. `jdk update` now refuses anything it
