@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-11
+
 ### Fixed
 
 - Catalog publication compares file contents rather than just size and
@@ -254,7 +256,9 @@ First public release — a Windows-first Java version manager.
 - PowerShell installer (`install.ps1`) with SHA-256 verification, plus release zips carrying `jdk.exe`, `jdk-shim.exe`, `LICENSE` and `README.md` alongside `.sha256` sidecars.
 - Published on crates.io: [`jdk`](https://crates.io/crates/jdk), [`jdk-core`](https://crates.io/crates/jdk-core) and [`jdk-resolve`](https://crates.io/crates/jdk-resolve).
 
-[Unreleased]: https://github.com/isacgalvao/jdk/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/isacgalvao/jdk/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/isacgalvao/jdk/releases/tag/v0.6.2
+[0.6.1]: https://github.com/isacgalvao/jdk/releases/tag/v0.6.1
 [0.6.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.6.0
 [0.5.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.5.0
 [0.4.0]: https://github.com/isacgalvao/jdk/releases/tag/v0.4.0
