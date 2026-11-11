@@ -62,13 +62,7 @@ jobs:
 
           git clone --depth 1 git@github.com:isacgalvao/jdk-index.git published
 
-          cp staged/index.json published/index.json
-          rsync -a --delete staged/windows-x64/ published/windows-x64/
-          if [ -d staged/windows-aarch64 ]; then
-            rsync -a --delete staged/windows-aarch64/ published/windows-aarch64/
-          else
-            rm -rf published/windows-aarch64
-          fi
+          bash .github/scripts/stage_index.sh staged published
 
           cd published
           git add -A
