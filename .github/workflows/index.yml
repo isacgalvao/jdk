@@ -62,7 +62,7 @@ jobs:
 
           git clone --depth 1 git@github.com:isacgalvao/jdk-index.git published
 
-          bash .github/scripts/stage_index.sh staged published
+          bash .github/scripts/stage_index.sh staged published ./target/release/jdk-index-gen
 
           cd published
           git add -A

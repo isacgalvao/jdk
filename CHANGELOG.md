@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Catalog publication compares file contents rather than just size and
+  modification time, and validates the copied tree before committing it.
+  Equal-size updates can no longer leave an old vendor file behind a new hash.
+
 ## [0.6.1] - 2026-11-06
 
 A maintenance release: dependency updates for a batch of security advisories,

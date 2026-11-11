@@ -59,9 +59,13 @@ const ARCHES: [&str; 2] = ["x64", "aarch64"];
     about = "Generate the jdk-index tree from the foojay Disco API"
 )]
 struct Cli {
-    /// Output directory (created if missing)
+    /// Output directory (created when generating; read-only with --validate-only)
     #[arg(long)]
     out: PathBuf,
+
+    /// Validate the existing output tree without fetching or writing anything
+    #[arg(long)]
+    validate_only: bool,
 
     /// Published index to guard against shrinkage: URL, local directory,
     /// or `none`
@@ -104,6 +108,15 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<()> {
+    // Check the copied publication tree with the same contract as generation,
+    // before constructing an HTTP client or touching any output files.
+    if cli.validate_only {
+        let counts = validate::tree(&cli.out, &REQUIRED)?;
+        validate::report(&counts, 0);
+        println!("index validated at {}", cli.out.display());
+        return Ok(());
+    }
+
     // Same override rule as the jdk CLI's JDK_INDEX/JDK_FOOJAY: only a
     // non-default source may be plain-http loopback; the real API and the
     // published URLs stay strictly https.

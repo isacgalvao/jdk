@@ -46,6 +46,14 @@ jobs:
         shell: pwsh
         run: ./.github/scripts/test_install_anchor.ps1
 
+  # Exercise the publication script with real rsync, including equal-size,
+  # equal-mtime files. The Windows suite cannot assume rsync is installed.
+  index-publication:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - run: cargo test --locked -p jdk-index-gen --test publication
+
   # rust-version is a promise to whoever runs `cargo install jdk` on an older
   # toolchain, and nothing else in the pipeline keeps it: rust-toolchain.toml
   # pins a much newer channel and is the only rustc anything ever builds with.
